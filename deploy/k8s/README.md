@@ -6,6 +6,11 @@ The four tracked manifests expose only the eBay callback at the exact external p
 One operator-created Secret must exist before the Deployment is applied. Do not
 commit it.
 
+The Deployment intentionally has no registry credential. GitHub keeps a GHCR
+package's visibility separate from its linked repository, so the package
+`ghcr.io/hraedon/touchstone` must also be changed to **Public** in Package settings
+before deployment. Making the repository public does not perform that second change.
+
 ## `touchstone-sink-secrets`
 
 Create this Opaque Secret in namespace `touchstone` with exactly these keys:
@@ -31,10 +36,10 @@ gitignored.
 4. Wait for the rollout and `ebdel-hraedon-com-tls` certificate.
 5. Verify the external challenge route before saving the endpoint in eBay.
 
-The image is public and both containers are pinned to the same registry digest. To
-release a new revision, wait for CI and its constrained-container smoke test to pass,
-then replace both image fields with the published manifest digest in one commit.
-Never deploy the mutable `main` tag.
+Both containers are pinned to the same registry digest. To release a new revision,
+wait for CI and its constrained-container smoke test to pass, then replace both image
+fields with the published manifest digest in one commit. Never deploy the mutable
+`main` tag.
 
 The database hostname must be reachable from the cluster, and the DSN role must own
 the schema (or otherwise have the DDL rights Alembic needs). The init container runs

@@ -92,6 +92,9 @@ Then capture one live search response into `samples/` (gitignored — it contain
   `usage.hraedon.com` and `vitrine.hraedon.com`. Created and resolving 2026-08-30.
 - Port 443 reachable from the internet at that ingress — same path the existing
   external hosts use.
+- **Image:** change the linked `ghcr.io/hraedon/touchstone` package visibility to
+  Public. GHCR visibility is separate from repository visibility and GitHub exposes
+  this change only through Package settings.
 - The production eBay keyset, for the POST path.
 
 ## The commitment this creates
