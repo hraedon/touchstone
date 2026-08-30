@@ -17,6 +17,10 @@ REQUIRED_SECRET_KEYS = {
     "EBAY_CLIENT_ID",
     "EBAY_CLIENT_SECRET",
 }
+RELEASE_IMAGE = (
+    "ghcr.io/hraedon/touchstone@"
+    "sha256:0fb4820a0ea66bd7323f50983bbe20e6db5889da9536017ecbd6f9e241fa153c"
+)
 
 
 def _manifest(name: str) -> dict[str, Any]:
@@ -48,13 +52,13 @@ def test_deployment_requires_every_secret_and_runs_hardened() -> None:
 
     pod = deployment["spec"]["template"]["spec"]
     assert pod["automountServiceAccountToken"] is False
-    assert pod["imagePullSecrets"] == [{"name": "ghcr-pull"}]
+    assert "imagePullSecrets" not in pod
     assert pod["securityContext"]["runAsNonRoot"] is True
     assert pod["securityContext"]["seccompProfile"] == {"type": "RuntimeDefault"}
 
     [container] = pod["containers"]
-    assert container["image"] == "ghcr.io/hraedon/touchstone:main"
-    assert container["imagePullPolicy"] == "Always"
+    assert container["image"] == RELEASE_IMAGE
+    assert container["imagePullPolicy"] == "IfNotPresent"
     assert container["ports"] == [{"name": "http", "containerPort": 8080}]
     assert {entry["name"] for entry in container["env"]} == REQUIRED_SECRET_KEYS
     for entry in container["env"]:
@@ -73,6 +77,7 @@ def test_deployment_requires_every_secret_and_runs_hardened() -> None:
 
     [migration] = pod["initContainers"]
     assert migration["image"] == container["image"]
+    assert migration["imagePullPolicy"] == "IfNotPresent"
     assert migration["command"] == ["alembic", "upgrade", "head"]
     assert migration["env"] == [
         {
@@ -118,3 +123,15 @@ def test_external_ingress_exposes_only_the_exact_callback_path() -> None:
             },
         }
     ]
+
+
+def test_namespace_pins_the_cluster_pod_security_version() -> None:
+    namespace = _manifest("namespace.yaml")
+    assert namespace["metadata"]["labels"] == {
+        "pod-security.kubernetes.io/enforce": "restricted",
+        "pod-security.kubernetes.io/enforce-version": "v1.35",
+        "pod-security.kubernetes.io/audit": "restricted",
+        "pod-security.kubernetes.io/audit-version": "v1.35",
+        "pod-security.kubernetes.io/warn": "restricted",
+        "pod-security.kubernetes.io/warn-version": "v1.35",
+    }

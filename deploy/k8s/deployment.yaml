@@ -19,8 +19,6 @@ spec:
         app: touchstone-sink
     spec:
       automountServiceAccountToken: false
-      imagePullSecrets:
-        - name: ghcr-pull
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -29,8 +27,8 @@ spec:
           type: RuntimeDefault
       initContainers:
         - name: migrate
-          image: ghcr.io/hraedon/touchstone:main
-          imagePullPolicy: Always
+          image: ghcr.io/hraedon/touchstone@sha256:0fb4820a0ea66bd7323f50983bbe20e6db5889da9536017ecbd6f9e241fa153c
+          imagePullPolicy: IfNotPresent
           command: ["alembic", "upgrade", "head"]
           env:
             - name: TOUCHSTONE_DSN
@@ -52,8 +50,8 @@ spec:
               memory: 256Mi
       containers:
         - name: sink
-          image: ghcr.io/hraedon/touchstone:main
-          imagePullPolicy: Always
+          image: ghcr.io/hraedon/touchstone@sha256:0fb4820a0ea66bd7323f50983bbe20e6db5889da9536017ecbd6f9e241fa153c
+          imagePullPolicy: IfNotPresent
           ports:
             - name: http
               containerPort: 8080
