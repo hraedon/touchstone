@@ -114,6 +114,12 @@ control.
 trailing slash and case, because the string is hashed into the challenge response. A
 mismatch fails endpoint validation with no useful error.
 
+**Credentials come from a k8s Secret at deploy time** (Plan 004) — the DSN, the eBay
+keyset, the verification token, and the umans key. The local `.env` is for
+development only. The database password is deliberately *not* being rotated before
+then: it will be regenerated when the Secret is created, so rotating now would just
+mean doing it twice.
+
 ## Settled mechanics
 
 **Endpoint validation.** `sha256(challengeCode + verificationToken + endpoint)`, in
