@@ -93,6 +93,27 @@ attribute a listing to a person is a stronger privacy outcome than retaining tha
 ability in order to exercise it later. Recorded so the reasoning can be revisited if
 eBay says otherwise.
 
+## The endpoint
+
+`https://ebdel.hraedon.com/` — internet-facing via `traefik-external`, cert from
+`letsencrypt-prod-porkbun`, path-scoped so only the sink is exposed. The management
+UI is never reachable from outside.
+
+The name is deliberately not self-describing. Every hostname a Let's Encrypt
+certificate is issued for is published in the public Certificate Transparency logs,
+permanently — so `ebay-deletions.hraedon.com` would advertise to anyone scanning CT
+that this host runs an eBay integration's deletion endpoint, and what it is for.
+`ebdel` says nothing.
+
+This is obscurity, not security. The hostname is still public, the endpoint is still
+reachable, and everything that protects it is the signature verification. It removes
+trivially greppable discovery and nothing more; do not let it substitute for a
+control.
+
+**`ENDPOINT_URL` must match the developer-portal value byte for byte**, including the
+trailing slash and case, because the string is hashed into the challenge response. A
+mismatch fails endpoint validation with no useful error.
+
 ## Settled mechanics
 
 **Endpoint validation.** `sha256(challengeCode + verificationToken + endpoint)`, in

@@ -141,12 +141,15 @@ def cmd_scans(args: argparse.Namespace) -> int:
     with factory() as session:
         stmt = select(Scan).order_by(Scan.started_at.desc()).limit(args.limit)
         rows = session.scalars(stmt).all()
+        if not rows:
+            print("no scans yet")
+            return 0
         for scan in rows:
             flag = " CAPPED" if scan.capped else ""
             print(
                 f"{scan.id:>5}  q={scan.query_id:<4} {scan.started_at.isoformat()}  "
                 f"{_describe(scan.status):<16} n={scan.result_count:<6} "
-                f"calls={scan.api_calls}{flag}"
+                f"excl={scan.excluded_low_feedback:<5} calls={scan.api_calls}{flag}"
             )
             if scan.error:
                 print(f"        {scan.error}")
