@@ -47,17 +47,36 @@ def test_core_does_not_import_the_web_layer() -> None:
     assert violations == [], "\n".join(violations)
 
 
-def test_truth_path_does_not_import_the_extractor_client() -> None:
+# extract.normalize / .specs / .cohort are pure string and arithmetic handling with
+# no network. extract.llm is the model provider client and is the actual boundary.
+PURE_EXTRACT = ("normalize", "specs", "cohort")
+
+
+def test_truth_path_does_not_import_the_model_provider() -> None:
     """A scan must complete whether or not the model provider is reachable.
 
-    scan/ may use extract.normalize (pure string handling); it must not reach the
-    provider client.
+    scan/ may use the deterministic extract helpers; it must never import the
+    provider client, because that is what would let a model outage stall a scan.
     """
     violations: list[str] = []
     for path in (SRC / "scan").rglob("*.py"):
         for name in imports_of(path):
-            if "extract" in name and not name.endswith("normalize"):
-                violations.append(f"{path.relative_to(SRC)} imports {name}")
+            if name.startswith("touchstone.extract"):
+                leaf = name.rsplit(".", 1)[-1]
+                if leaf not in PURE_EXTRACT:
+                    violations.append(f"{path.relative_to(SRC)} imports {name}")
+    assert violations == [], "\n".join(violations)
+
+
+def test_deterministic_extract_helpers_do_no_network() -> None:
+    """Guards the boundary above: those modules are only safe for the truth path
+    while they stay offline."""
+    violations: list[str] = []
+    for leaf in PURE_EXTRACT:
+        path = SRC / "extract" / f"{leaf}.py"
+        for name in imports_of(path):
+            if name.split(".")[0] in {"httpx", "requests", "urllib", "socket", "http"}:
+                violations.append(f"extract/{leaf}.py imports {name}")
     assert violations == [], "\n".join(violations)
 
 

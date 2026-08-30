@@ -19,6 +19,9 @@ from sqlalchemy.orm import Session
 
 from touchstone.db.models import (
     BuyingOption,
+    Deal,
+    ExtractionMethod,
+    ItemSpec,
     Listing,
     ListingDisappearance,
     ListingObservation,
@@ -29,8 +32,10 @@ from touchstone.db.models import (
 )
 from touchstone.ebay.budget import BudgetGuard
 from touchstone.ebay.client import MAX_LIMIT, MAX_RESULT_SET, EbayClient, ParsedListing
+from touchstone.extract.cohort import CohortFields, cohort_key
 from touchstone.extract.normalize import title_hash
-from touchstone.scan.aggregate import Priced, cohort_stats, provisional_cohort_key
+from touchstone.scan.aggregate import Priced, Stats, cohort_stats
+from touchstone.scan.deals import evaluate
 from touchstone.scan.diff import PreviousListing, find_disappearances
 
 log = logging.getLogger("touchstone.scan")
@@ -50,6 +55,7 @@ class ScanResult:
     cohorts: int
     api_calls: int
     capped: bool
+    deals: int = 0
 
 
 def _buying_option(options: tuple[str, ...]) -> BuyingOption:
@@ -68,6 +74,37 @@ def _buying_option(options: tuple[str, ...]) -> BuyingOption:
         if candidate.value in options:
             return candidate
     return BuyingOption.OTHER
+
+
+def _spec_index(session: Session, hashes: set[str]) -> dict[str, ItemSpec]:
+    """Specs for the titles in this scan, keyed by title hash.
+
+    Missing entries are normal and expected: extraction runs on its own schedule, so
+    a listing first seen this scan has no spec yet. It lands in the unspecced cohort
+    until the next extraction pass, which is the correct behavior — an unknown
+    quantity must not be mixed into a real cohort.
+    """
+    if not hashes:
+        return {}
+    rows = session.scalars(select(ItemSpec).where(ItemSpec.title_hash.in_(hashes))).all()
+    return {row.title_hash: row for row in rows}
+
+
+def _cohort_of(spec: ItemSpec | None, condition_id: str | None) -> str:
+    if spec is None:
+        return cohort_key(None, condition_id)
+    return cohort_key(
+        CohortFields(
+            ddr_gen=spec.ddr_gen,
+            form_factor=spec.form_factor,
+            ecc=spec.ecc,
+            registered=spec.registered,
+            capacity_per_module_gb=spec.capacity_per_module_gb,
+            speed_mt=spec.speed_mt,
+            rank_org=spec.rank_org,
+        ),
+        condition_id,
+    )
 
 
 def _previous_scan(session: Session, query_id: int, before_scan_id: int) -> Scan | None:
@@ -93,17 +130,17 @@ def _previous_snapshot(session: Session, scan_id: int) -> list[PreviousListing]:
             ListingObservation.total_cost,
             ListingObservation.currency,
             Listing.condition_id,
+            Listing.title_hash,
         )
         .join(Listing, Listing.item_id == ListingObservation.listing_id)
         .where(ListingObservation.scan_id == scan_id)
     )
     rows = session.execute(stmt).all()
-    scan = session.get(Scan, scan_id)
-    query_id = scan.query_id if scan is not None else 0
+    specs = _spec_index(session, {str(row.title_hash) for row in rows})
     return [
         PreviousListing(
             item_id=str(row.listing_id),
-            cohort_key=provisional_cohort_key(query_id, row.condition_id),
+            cohort_key=_cohort_of(specs.get(str(row.title_hash)), row.condition_id),
             last_price=float(row.price),
             last_total_cost=float(row.total_cost),
             currency=str(row.currency),
@@ -142,6 +179,65 @@ def _upsert_listing(session: Session, parsed: ParsedListing, observed_at: dateti
         )
     )
     return True
+
+
+def _flag_deals(
+    session: Session,
+    scan_id: int,
+    seen: dict[str, ParsedListing],
+    cohort_of: dict[str, str],
+    gb_of: dict[str, int | None],
+    specs: dict[str, ItemSpec],
+    per_gb_by_cohort: dict[str, Stats],
+) -> int:
+    """Flag listings below their cohort's p10, once each, ever.
+
+    Re-flagging a listing every scan trains the operator to ignore the feed, so a
+    listing already carrying a Deal row is skipped rather than re-scored.
+    """
+    already = set(
+        session.scalars(
+            select(Deal.listing_id).where(Deal.listing_id.in_(list(seen)))
+        ).all()
+    )
+    flagged = 0
+    for parsed in seen.values():
+        if parsed.item_id in already:
+            continue
+        key = cohort_of[parsed.item_id]
+        stats = per_gb_by_cohort.get(key)
+        total_gb = gb_of[parsed.item_id]
+        if stats is None or total_gb is None or total_gb <= 0:
+            continue
+
+        spec = specs.get(title_hash(parsed.title))
+        candidate = evaluate(
+            listing_id=parsed.item_id,
+            cohort_key=key,
+            per_gb=parsed.total_cost / total_gb,
+            cohort_p10=stats.p10,
+            cohort_median=stats.median,
+            cohort_n=stats.n,
+            confidence=float(spec.confidence) if spec and spec.confidence else None,
+            manual=bool(spec and spec.method is ExtractionMethod.MANUAL),
+        )
+        if candidate is None:
+            continue
+        session.add(
+            Deal(
+                listing_id=candidate.listing_id,
+                scan_id=scan_id,
+                cohort_key=candidate.cohort_key,
+                total_cost=parsed.total_cost,
+                per_gb=candidate.per_gb,
+                cohort_p10=candidate.cohort_p10,
+                cohort_n=candidate.cohort_n,
+                score=candidate.score,
+            )
+        )
+        flagged += 1
+    session.flush()
+    return flagged
 
 
 def run_scan(
@@ -266,17 +362,29 @@ def run_scan(
                 )
             disappeared = len(gone)
 
+        # --- cohorts from stored specs ---------------------------------------
+        specs = _spec_index(session, {title_hash(p.title) for p in seen.values()})
+        cohort_of: dict[str, str] = {}
+        gb_of: dict[str, int | None] = {}
+        for parsed in seen.values():
+            spec = specs.get(title_hash(parsed.title))
+            cohort_of[parsed.item_id] = _cohort_of(spec, parsed.condition_id)
+            gb_of[parsed.item_id] = spec.total_gb if spec is not None else None
+
         # --- aggregates: computed here, written once, never recomputed -------
         priced = [
             Priced(
-                cohort_key=provisional_cohort_key(query.id, parsed.condition_id),
+                cohort_key=cohort_of[parsed.item_id],
                 total_cost=parsed.total_cost,
                 currency=parsed.currency,
-                total_gb=None,  # Plan 002 supplies specs
+                total_gb=gb_of[parsed.item_id],
             )
             for parsed in seen.values()
         ]
         cohorts = cohort_stats(priced)
+        per_gb_by_cohort: dict[str, Stats] = {
+            c.cohort_key: c.per_gb for c in cohorts if c.per_gb is not None
+        }
         for cohort in cohorts:
             session.add(
                 ScanAggregate(
@@ -299,6 +407,11 @@ def run_scan(
                 )
             )
 
+        # --- deal flagging ----------------------------------------------------
+        flagged = _flag_deals(
+            session, scan.id, seen, cohort_of, gb_of, specs, per_gb_by_cohort
+        )
+
         scan.status = ScanStatus.COMPLETE
         scan.finished_at = datetime.now(UTC)
         scan.api_calls = calls
@@ -318,6 +431,7 @@ def run_scan(
             cohorts=len(cohorts),
             api_calls=calls,
             capped=capped,
+            deals=flagged,
         )
 
     except Exception as exc:

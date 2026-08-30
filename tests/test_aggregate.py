@@ -4,13 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from touchstone.scan.aggregate import (
-    Priced,
-    Stats,
-    cohort_stats,
-    percentile,
-    provisional_cohort_key,
-)
+from touchstone.extract.cohort import CohortFields, cohort_key
+from touchstone.scan.aggregate import Priced, Stats, cohort_stats, percentile
 
 
 def test_percentile_interpolates() -> None:
@@ -95,8 +90,9 @@ def test_per_gb_computed_when_every_member_is_specced() -> None:
 def test_cohort_key_separates_conditions() -> None:
     """New and pulled-from-a-server memory are different goods at different prices;
     a statistic blending them describes neither."""
-    assert provisional_cohort_key(1, "1000") != provisional_cohort_key(1, "3000")
-    assert provisional_cohort_key(1, None) == provisional_cohort_key(1, None)
+    fields = CohortFields(capacity_per_module_gb=32, ddr_gen="DDR4")
+    assert cohort_key(fields, "1000") != cohort_key(fields, "3000")
+    assert cohort_key(fields, None) == cohort_key(fields, None)
 
 
 def test_aggregate_module_exposes_no_recompute_path() -> None:

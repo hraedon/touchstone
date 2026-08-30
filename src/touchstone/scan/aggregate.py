@@ -73,20 +73,6 @@ class CohortStats:
     per_gb: Stats | None
 
 
-def provisional_cohort_key(query_id: int, condition_id: str | None) -> str:
-    """Cohort key for Plan 001, before title extraction exists.
-
-    Coarse but honest: listings from one query at one condition. Plan 002 replaces
-    this with the full spec tuple (ddr_gen, form_factor, ecc, registered, capacity,
-    speed, rank_org, condition). The column is sized for that.
-
-    Condition belongs in the key rather than being averaged over: new memory and
-    memory pulled from a decommissioned server are different goods at different
-    prices, and a statistic blending them describes neither.
-    """
-    return f"q={query_id}|cond={condition_id or 'unknown'}"
-
-
 @dataclass(frozen=True)
 class Priced:
     """The minimum an aggregate needs about one observed listing."""

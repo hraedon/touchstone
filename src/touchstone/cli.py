@@ -15,10 +15,12 @@ from typing import assert_never
 
 from sqlalchemy import select
 
-from touchstone.db.models import Query, Scan, ScanStatus
+from touchstone.db.models import Deal, Query, Scan, ScanStatus
 from touchstone.db.session import make_engine, make_session_factory
 from touchstone.ebay.budget import BudgetGuard, recent_budgets
 from touchstone.ebay.client import Credentials, EbayClient
+from touchstone.extract.llm import DEFAULT_MODEL, UmansExtractor
+from touchstone.extract.runner import run_extraction
 from touchstone.scan.runner import ScanSkipped, run_scan
 
 log = logging.getLogger("touchstone")
@@ -141,6 +143,58 @@ def cmd_scans(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_extract(args: argparse.Namespace) -> int:
+    """Fill in specs for titles that lack one.
+
+    Deliberately a separate command from `scan`: a scan records what eBay said and
+    must complete whether or not a model is reachable. This decides what those words
+    meant, and is allowed to fail on its own.
+    """
+    api_key = os.environ.get("UMANS_API_KEY", "").strip()
+    model = os.environ.get("TOUCHSTONE_EXTRACT_MODEL", DEFAULT_MODEL).strip()
+
+    factory = make_session_factory(make_engine())
+    with factory() as session:
+        if not api_key:
+            log.warning(
+                "UMANS_API_KEY unset: regex only. Titles it cannot read confidently "
+                "stay pending rather than being guessed at."
+            )
+            run = run_extraction(session, extractor=None, limit=args.limit)
+        else:
+            # A -lab model id raises here rather than being quietly used.
+            with UmansExtractor(api_key=api_key, model=model) as extractor:
+                run = run_extraction(session, extractor=extractor, limit=args.limit)
+        session.commit()
+
+    print(
+        f"{run.considered} titles considered: {run.by_regex} by regex, "
+        f"{run.by_model} by model, {run.unresolved} unresolved"
+    )
+    return 0
+
+
+def cmd_deals(args: argparse.Namespace) -> int:
+    factory = make_session_factory(make_engine())
+    with factory() as session:
+        stmt = select(Deal).order_by(Deal.score.desc()).limit(args.limit)
+        if not args.all:
+            stmt = stmt.where(Deal.dismissed_at.is_(None))
+        rows = session.scalars(stmt).all()
+        if not rows:
+            print("no deals flagged")
+            return 0
+        for deal in rows:
+            per_gb = f"{float(deal.per_gb):.2f}" if deal.per_gb is not None else "?"
+            print(
+                f"score={float(deal.score):>6.2f}  ${float(deal.total_cost):>8.2f}  "
+                f"${per_gb}/GB  (cohort p10 ${float(deal.cohort_p10):.2f}/GB, "
+                f"n={deal.cohort_n})  {deal.listing_id}"
+            )
+            print(f"        {deal.cohort_key}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="touchstone", description=__doc__)
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -166,6 +220,15 @@ def build_parser() -> argparse.ArgumentParser:
     scans = sub.add_parser("scans", help="recent scans")
     scans.add_argument("--limit", type=int, default=20)
     scans.set_defaults(func=cmd_scans)
+
+    extract = sub.add_parser("extract", help="extract specs for unread titles")
+    extract.add_argument("--limit", type=int, default=500)
+    extract.set_defaults(func=cmd_extract)
+
+    deals = sub.add_parser("deals", help="listings flagged below their cohort")
+    deals.add_argument("--limit", type=int, default=25)
+    deals.add_argument("--all", action="store_true", help="include dismissed")
+    deals.set_defaults(func=cmd_deals)
 
     sub.add_parser("budget", help="remaining API quota").set_defaults(func=cmd_budget)
     return parser
