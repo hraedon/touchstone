@@ -26,5 +26,8 @@ data/
 .identifiers-denylist.local
 deploy/k8s/secret-*.yaml
 
+# Agent tooling (agent-notes writes SessionStart/Stop hooks here per checkout)
+.claude/
+
 # OS
 .DS_Store
