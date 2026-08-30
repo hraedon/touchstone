@@ -2,11 +2,10 @@
 
 Two complementary checks:
 
-1. Always-on (no configuration): no tracked file may live under ``samples/``.
-   ``.gitignore`` is advisory — ``git add -f`` bypasses it — so this guard makes
-   an accidental force-add of a real identifier-bearing data file fail CI. The
-   ``samples/`` directory holds real environment data (hostnames, service
-   accounts, principal handles) that must never be committed (AGENTS.md).
+1. Always-on (no configuration): runtime data and operator secrets may not be
+   tracked. ``.gitignore`` is advisory — ``git add -f`` bypasses it — so this
+   guard makes an accidental force-add of ``samples/``, ``data/``, a local
+   ``.env*``, or a generated Kubernetes Secret fail CI.
 
 2. Secret-driven: when ``TOUCHSTONE_FORBIDDEN_IDENTIFIERS`` is set (a
    whitespace-separated list of real identifiers — hostnames, emails, service
@@ -47,14 +46,11 @@ MIN_IDENTIFIER_LENGTH = 4
 _PHRASE_SEPARATOR = r"[\s._\-]+"
 _BINARY_SNIFF_LEN = 8192
 # Dirs skipped by the identifier scan: .venv is build output. The always-on
-# guard below handles root-level samples/ (which holds real identifier-bearing
-# data); nested directories named samples/ (e.g. tests/samples/) are legitimate
-# code dirs and SHOULD be scanned.
+# guard below handles root-level runtime-data dirs; nested directories with the
+# same names (e.g. tests/data/) are legitimate code dirs and SHOULD be scanned.
 _SKIP_DIRS = frozenset({".venv"})
-# Root-level gitignored data dirs that must never contain a tracked file. The
-# guard matches the first path component so a legitimate nested code dir named
-# ``samples`` (e.g. ``tests/samples/``) is not a false positive.
-_GUARDED_DIRS = frozenset({"samples"})
+# Root-level gitignored data dirs that must never contain a tracked file.
+_GUARDED_DIRS = frozenset({"samples", "data"})
 
 
 @dataclass(frozen=True)
@@ -358,12 +354,30 @@ def print_report(violations: list[Violation]) -> None:
 
 
 def leaked_tracked_files(paths: list[Path], guarded: frozenset[str]) -> list[Path]:
-    """Tracked files whose root component is a guarded (gitignored) data dir.
+    """Tracked paths that are reserved for runtime data or operator secrets.
 
-    Matches only the first path component so a nested code directory that happens
-    to be named ``samples`` (e.g. ``tests/samples/``) is not a false positive.
+    Directory matching uses only the first path component, so ``tests/data/`` is
+    not a false positive. ``.env.example`` is the deliberately tracked template.
     """
-    return [p for p in paths if p.parts and p.parts[0] in guarded]
+    leaked: list[Path] = []
+    for path in paths:
+        if path.parts and path.parts[0] in guarded:
+            leaked.append(path)
+            continue
+        if len(path.parts) == 1 and (
+            path.name == ".env"
+            or (path.name.startswith(".env.") and path.name != ".env.example")
+        ):
+            leaked.append(path)
+            continue
+        if (
+            len(path.parts) == 3
+            and path.parts[:2] == ("deploy", "k8s")
+            and path.name.startswith("secret-")
+            and path.suffix in {".yaml", ".yml"}
+        ):
+            leaked.append(path)
+    return leaked
 
 
 def _resolve_identifiers() -> frozenset[str] | None:
@@ -453,13 +467,12 @@ def _run(args: argparse.Namespace) -> int:
     #    catches a ``git add -f samples/...`` leak regardless of secret config.
     leaked = leaked_tracked_files(paths, _GUARDED_DIRS)
     if leaked:
-        print("Tracked files under a gitignored data directory detected:", file=sys.stderr)
+        print("Tracked runtime-data or operator-secret paths detected:", file=sys.stderr)
         for p in sorted(leaked, key=str):
             print(f"  {p}", file=sys.stderr)
         print(
-            "\nThese paths are gitignored by convention (samples/ holds real "
-            "identifier-bearing data — hostnames, service accounts, principal "
-            "handles). Remove them from the index: git rm --cached -r <path>.",
+            "\nThese paths are reserved for runtime data or operator-generated "
+            "secrets. Remove them from the index: git rm --cached -r <path>.",
             file=sys.stderr,
         )
         return 1

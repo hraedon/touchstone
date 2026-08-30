@@ -89,8 +89,11 @@ and no work-domain identifiers in committed files.
 
 ## Status
 
-Plans 001 (foundation) and 002 (specs, cohorts, deals) complete. Plan 003 is the
-web UI, 004 is deployment and endpoint activation. Nothing has scanned live yet.
+Plans 001 (foundation) and 002 (specs, cohorts, deals) are complete. The Plan 004a
+sink, image, and external-ingress manifests are implemented; production Secret
+provisioning and eBay endpoint activation remain. Plan 003 is the web UI, followed by
+the remaining scanner/extractor deployment work in Plan 004. Nothing has scanned
+live yet.
 
 ## Development
 
@@ -103,4 +106,5 @@ ruff check . && mypy
 
 ## License
 
-Private. Not published.
+[MIT](LICENSE). The official eBay interoperability fixture retained in the test suite
+is identified in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

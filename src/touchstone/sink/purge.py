@@ -47,7 +47,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from touchstone.db.models import DeletionReceipt
@@ -77,14 +78,27 @@ def handle_deletion(session: Session, notification_id: str) -> DeletionOutcome:
     Deletes nothing, because there is no seller data to delete. Idempotent: eBay
     resends until acknowledged, and a redelivery must not create a second receipt.
     """
-    existing = session.get(DeletionReceipt, notification_id)
-    if existing is not None and existing.acknowledged_at is not None:
-        return DeletionOutcome(notification_id=notification_id, already_seen=True)
-
-    receipt = existing or DeletionReceipt(notification_id=notification_id)
-    receipt.acknowledged_at = datetime.now(UTC)
-    session.add(receipt)
-    session.flush()
+    acknowledged_at = datetime.now(UTC)
+    inserted = session.scalar(
+        insert(DeletionReceipt)
+        .values(notification_id=notification_id, acknowledged_at=acknowledged_at)
+        .on_conflict_do_nothing(index_elements=[DeletionReceipt.notification_id])
+        .returning(DeletionReceipt.notification_id)
+    )
+    if inserted is None:
+        # A historical/pending receipt still needs completing. The predicate keeps
+        # this atomic too: only one concurrent delivery can transition it.
+        completed_pending = session.scalar(
+            update(DeletionReceipt)
+            .where(
+                DeletionReceipt.notification_id == notification_id,
+                DeletionReceipt.acknowledged_at.is_(None),
+            )
+            .values(acknowledged_at=acknowledged_at)
+            .returning(DeletionReceipt.notification_id)
+        )
+        if completed_pending is None:
+            return DeletionOutcome(notification_id=notification_id, already_seen=True)
 
     log.info(
         "deletion notification %s acknowledged; no seller data is stored, so "

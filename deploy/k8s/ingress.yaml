@@ -1,0 +1,27 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: touchstone-sink-ext
+  namespace: touchstone
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod-porkbun
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+spec:
+  ingressClassName: traefik-external
+  tls:
+    - hosts:
+        - ebdel.hraedon.com
+      secretName: ebdel-hraedon-com-tls
+  rules:
+    - host: ebdel.hraedon.com
+      http:
+        paths:
+          # Query strings do not affect Ingress path matching. Exact `/` exposes
+          # both callback methods while keeping /healthz and future UI routes private.
+          - path: /
+            pathType: Exact
+            backend:
+              service:
+                name: touchstone-sink
+                port:
+                  name: http

@@ -1,0 +1,114 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: touchstone-sink
+  namespace: touchstone
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: touchstone-sink
+  template:
+    metadata:
+      labels:
+        app: touchstone-sink
+    spec:
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: ghcr-pull
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: migrate
+          image: ghcr.io/hraedon/touchstone:main
+          imagePullPolicy: Always
+          command: ["alembic", "upgrade", "head"]
+          env:
+            - name: TOUCHSTONE_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: touchstone-sink-secrets
+                  key: TOUCHSTONE_DSN
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+      containers:
+        - name: sink
+          image: ghcr.io/hraedon/touchstone:main
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: TOUCHSTONE_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: touchstone-sink-secrets
+                  key: TOUCHSTONE_DSN
+            - name: VERIFICATION_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: touchstone-sink-secrets
+                  key: VERIFICATION_TOKEN
+            - name: ENDPOINT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: touchstone-sink-secrets
+                  key: ENDPOINT_URL
+            - name: EBAY_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: touchstone-sink-secrets
+                  key: EBAY_CLIENT_ID
+            - name: EBAY_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: touchstone-sink-secrets
+                  key: EBAY_CLIENT_SECRET
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      terminationGracePeriodSeconds: 30

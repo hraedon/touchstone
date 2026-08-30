@@ -1,0 +1,25 @@
+.git
+.github
+.venv
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# The build uses explicit COPY instructions, but keep secrets and raw marketplace
+# responses out of the context too so a future broad COPY cannot capture them.
+.env
+.env.*
+deploy/k8s/secret-*.yaml
+samples/
+data/
+*.db
+*.sqlite3
+
+tests/
+docs/
+plans/
+githooks/
+scripts/

@@ -9,11 +9,14 @@ there is nothing a purge could have missed.
 from __future__ import annotations
 
 import json
+import threading
 from typing import Any
+from unittest.mock import patch
 
 import pytest
-from sqlalchemy import Engine, inspect, select
+from sqlalchemy import Engine, delete, func, inspect, select
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.dml import Insert
 
 from tests.fake_ebay import item
 from touchstone.db.models import Base, DeletionReceipt, Listing, Query, Scan, ScanStatus
@@ -175,6 +178,69 @@ class TestAcknowledgement:
         assert first.already_seen is False
         assert second.already_seen is True
         assert len(receipts(session)) == 1
+
+    def test_concurrent_redelivery_does_not_race_the_receipt_insert(
+        self, engine: Engine
+    ) -> None:
+        """A rolling deploy briefly has two sink pods able to receive the same ID."""
+        notification_id = "concurrent-redelivery-fixture"
+        with Session(engine) as cleanup:
+            cleanup.execute(
+                delete(DeletionReceipt).where(
+                    DeletionReceipt.notification_id == notification_id
+                )
+            )
+            cleanup.commit()
+
+        start = threading.Barrier(3)
+        both_inserts_ready = threading.Barrier(2)
+        errors: list[Exception] = []
+        outcomes: list[bool] = []
+        original_scalar = Session.scalar
+
+        def synchronized_scalar(
+            current: Session,
+            statement: Any,
+            *args: Any,
+            **kwargs: Any,
+        ) -> Any:
+            if isinstance(statement, Insert):
+                both_inserts_ready.wait(timeout=5)
+            return original_scalar(current, statement, *args, **kwargs)
+
+        def deliver() -> None:
+            try:
+                start.wait(timeout=5)
+                with Session(engine) as concurrent_session:
+                    outcome = handle_deletion(concurrent_session, notification_id)
+                    concurrent_session.commit()
+                    outcomes.append(outcome.already_seen)
+            except Exception as exc:  # the assertion below reports either thread
+                errors.append(exc)
+
+        with patch.object(Session, "scalar", synchronized_scalar):
+            workers = [threading.Thread(target=deliver) for _ in range(2)]
+            for worker in workers:
+                worker.start()
+            start.wait(timeout=5)
+            for worker in workers:
+                worker.join(timeout=10)
+
+        assert errors == []
+        assert sorted(outcomes) == [False, True]
+        with Session(engine) as check:
+            count = check.scalar(
+                select(func.count()).select_from(DeletionReceipt).where(
+                    DeletionReceipt.notification_id == notification_id
+                )
+            )
+            assert count == 1
+            check.execute(
+                delete(DeletionReceipt).where(
+                    DeletionReceipt.notification_id == notification_id
+                )
+            )
+            check.commit()
 
     def test_nothing_is_deleted(self, session: Session) -> None:
         """The listings are market data about offers, not personal data about the

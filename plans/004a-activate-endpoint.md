@@ -89,7 +89,7 @@ Then capture one live search response into `samples/` (gitignored — it contain
 ## Operator prerequisites
 
 - **DNS:** `ebdel.hraedon.com` CNAME → `ingress-ext.hraedon.com`, matching
-  `usage.hraedon.com` and `vitrine.hraedon.com`. Not yet created.
+  `usage.hraedon.com` and `vitrine.hraedon.com`. Created and resolving 2026-08-30.
 - Port 443 reachable from the internet at that ingress — same path the existing
   external hosts use.
 - The production eBay keyset, for the POST path.
