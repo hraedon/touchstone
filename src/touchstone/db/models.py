@@ -5,9 +5,10 @@ Governed by ``docs/measurement-model.md``. Read it before changing anything here
 Two structural properties are load-bearing and are expressed in the schema rather
 than in prose, because prose does not survive a refactor:
 
-1. ``Listing`` is the *only* table carrying eBay seller identifiers. A purge finds
-   personal data by deleting from exactly one place, and observations cascade from
-   it. Adding an identifier column to any other table breaks the deletion story.
+1. **No table holds an eBay user identifier.** Seller usernames are dropped in the
+   API client before they reach this layer. Data never stored needs no deletion, no
+   register of deletion requests, and cannot be resurrected from a backup — which is
+   why the deletion endpoint has nothing to erase. Do not add a seller column.
 
 2. ``ScanAggregate`` has no identifier columns and **no foreign key to Listing**. It
    is written once at scan time and never recomputed, so honoring a deletion cannot
@@ -132,16 +133,16 @@ class Scan(Base):
 
 
 class Listing(Base):
-    """A stable eBay item, carrying the seller identifiers in scope for deletion.
+    """A stable eBay item: a product offer, with no attribution to a person.
 
-    ``seller_username`` is what the Browse API actually gives us. ``seller_user_id``
-    and ``seller_eias_token`` are nullable because Browse does not return them; they
-    exist so a purge can match on any identifier a deletion notification carries.
+    There is deliberately no seller column. A listing stripped of its seller is
+    market data about an offer, not personal data about a user — the same reasoning
+    that lets ``ScanAggregate`` survive independently, applied one level down.
 
-    Note the asymmetry this creates: a notification that withholds the username (eBay
-    does this for some US users, supplying only the immutable userId) cannot be
-    matched against rows we only hold a username for. That gap is recorded in
-    ``DeletionReceipt`` rather than silently acked. See plans/004.
+    The consequence is that an account-deletion notification has nothing to match
+    and nothing to erase, which is a far stronger position than matching correctly
+    would have been: no purge list of deleted users to retain, no replay after a
+    restore, and no divergence between eBay's identifier spaces to fall through.
     """
 
     __tablename__ = "listing"
@@ -153,10 +154,6 @@ class Listing(Base):
     # Hash of the normalized title; joins to ItemSpec so extraction is cached
     # per distinct title rather than per listing.
     title_hash: Mapped[str] = mapped_column(String(64), index=True)
-
-    seller_username: Mapped[str | None] = mapped_column(String(200), index=True)
-    seller_user_id: Mapped[str | None] = mapped_column(String(200), index=True)
-    seller_eias_token: Mapped[str | None] = mapped_column(String(200), index=True)
 
     condition: Mapped[str | None] = mapped_column(String(100))
     # eBay's stable numeric condition code (1000=New, 3000=Used, ...). Preferred
@@ -372,24 +369,22 @@ class RateBudget(Base):
 
 
 class DeletionReceipt(Base):
-    """Audit trail for every eBay account-deletion notification acted on.
+    """Proof that every account-deletion notification was received and answered.
 
-    Holds the notification's identifiers by necessity — they are what we were asked
-    to erase, and we must be able to show what we did. Also records the count of rows
-    removed, and ``unmatched=True`` when a notification carried no identifier we hold
-    (a username-withheld notification against username-only rows), so that gap is
-    visible rather than silently acked as a successful purge.
+    **Stores no identifiers.** An earlier design kept the notification's username,
+    userId, and eiasToken so a purge could match on them — which amounted to
+    maintaining a permanent register of the people who had asked to be forgotten, in
+    order to demonstrate that we had forgotten them. Since no seller data is stored
+    in the first place, none of that is needed: the notification id and a timestamp
+    are enough to show the endpoint answered.
+
+    The compliance claim this supports is stronger than an audit log, because it is
+    checkable from the schema rather than from records we wrote about ourselves:
+    there is no seller column anywhere for a deletion to have missed.
     """
 
     __tablename__ = "deletion_receipt"
 
     notification_id: Mapped[str] = mapped_column(String(200), primary_key=True)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    username: Mapped[str | None] = mapped_column(String(200))
-    user_id: Mapped[str | None] = mapped_column(String(200))
-    eias_token: Mapped[str | None] = mapped_column(String(200))
-
-    listings_deleted: Mapped[int] = mapped_column(Integer, default=0)
-    observations_deleted: Mapped[int] = mapped_column(Integer, default=0)
-    unmatched: Mapped[bool] = mapped_column(Boolean, default=False)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

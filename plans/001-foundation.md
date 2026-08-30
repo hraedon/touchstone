@@ -1,5 +1,11 @@
 # Plan 001 — Foundation: the truth path
 
+> **Superseded in part, 2026-08-30.** WI-001 below describes seller identifier
+> columns on `listing` and a purge that matches against them. Those columns were
+> removed the same day: touchstone stores no eBay user identifier at all, so a
+> deletion notification has nothing to erase. Left unedited as a record of what was
+> built; see `docs/deletion-compliance.md` for why it changed.
+
 **Goal:** a scan of an eBay search produces correct `listing_observation` rows and
 correct, immutable `scan_aggregate` rows, provably, without a live eBay account.
 

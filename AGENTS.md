@@ -13,14 +13,22 @@ from free-text titles — that is its entire remit. If you find yourself wanting
 model to fill in a price, stop.
 
 **Read-only against eBay.** touchstone issues GETs. It never bids, buys, lists,
-messages, or writes anything to eBay. The only deletion it performs is of its own
-data, on eBay's instruction.
+messages, or writes anything to eBay.
+
+**Never store an eBay seller identifier.** No username, no userId, no eiasToken, in
+any table. The API client drops `seller.username` before it reaches the database
+layer. This is what makes the deletion endpoint trivially correct — there is nothing
+to erase, no register of erased users to keep, and nothing a backup restore can
+resurrect. Three tests enforce it, including one that inspects the live schema. If
+you find yourself adding a seller column to enable a feature, read
+`docs/deletion-compliance.md` first: the feature is almost certainly not worth it.
 
 **`scan_aggregate` is written once and never recomputed.** There must be no code path
-that regenerates it from `listing` rows. This is what keeps a deletion from
-retroactively rewriting history. A "let's just recompute the aggregates" refactor
-silently destroys the property; if one is ever needed, it is a schema migration with
-a written rationale, not a background job.
+that regenerates it from `listing` rows. Retention pruning will eventually drop old
+listings, and derived statistics would silently rewrite every historical chart when
+it does. A "let's just recompute the aggregates" refactor destroys the property; if
+one is ever needed, it is a schema migration with a written rationale, not a
+background job.
 
 **Never label an inference as a fact.** The proxy sold series is a disappearance
 series. Call it that in code, in the schema, in the UI, and in exports. Do not add a
@@ -31,10 +39,10 @@ identifiers (`hraedon`, `mvm*`, `ad.hraedon.com`) are fine. The work-domain set 
 not, and is blocked mechanically by the identifier gate — `scripts/install-git-hooks.sh`
 installs it, CI re-checks it. Describe the denylist; never quote an entry from it.
 
-**Never commit observed listing data.** `samples/` and `data/` are gitignored. A
-committed snapshot contains seller identifiers, which the purge cannot reach — it
-would put personal data permanently beyond the deletion endpoint's ability to erase
-it. That is precisely the failure the endpoint exists to prevent.
+**Never commit observed listing data.** `samples/` and `data/` are gitignored. A raw
+API response contains `seller.username` even though we do not store it, and a
+committed copy would put an identifier in git history permanently — reintroducing by
+accident exactly the retention the schema is designed to avoid.
 
 **Secrets come from the environment.** No credential in a tracked file, including
 `deploy/k8s/secret-*.yaml` (gitignored, operator-generated). Do not copy the umans
@@ -60,7 +68,7 @@ src/touchstone/
   ebay/       API client — OAuth, Browse search, rate budget. httpx only.
   scan/       The truth path: snapshot → observations → aggregates. Deterministic.
   extract/    Title → spec. Regex fast path, umans fallback. Never inline in a scan.
-  sink/       eBay account-deletion endpoint + the purge.
+  sink/       eBay account-deletion endpoint. Acknowledges; erases nothing.
   web/        FastAPI + Jinja2 UI. Imports the core; the core never imports web.
 ```
 
@@ -92,8 +100,12 @@ silently drifts is a check whose failure mode is silence.
 
 ## Deletion endpoint
 
-The purge is a compliance claim, so it is proven rather than asserted. The test seeds
-a listing for a synthetic seller, posts a signed notification, and asserts: the
-listing and its observations are gone, `scan_aggregate` is **unchanged**, and the
-sink answered 200 only after the delete committed. A failed purge answers 500 so
-eBay retries — never ack a purge that did not happen.
+The compliance claim is structural, not behavioural, so the tests check the *absence*
+of a place to store an identifier rather than the success of a purge: no seller
+column in the model metadata, none in the live schema, and a client that declines to
+parse `seller` from a response that definitely contains one.
+
+We still subscribe and still acknowledge — touchstone persists eBay data (listings,
+titles, prices), so the exemption toggle would be a false attestation. Redelivery
+must not create a second receipt. `docs/deletion-compliance.md` has the full
+reasoning, including what not storing the seller costs us.

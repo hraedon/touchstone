@@ -50,6 +50,11 @@ class ParsedListing:
 
     Everything here is copied verbatim from the API response. Nothing is inferred,
     estimated, or filled in — this is the truth path.
+
+    **The seller is deliberately absent.** ``ItemSummary`` carries ``seller.username``
+    and we drop it here rather than downstream, so an eBay user identifier never
+    enters the process at all. See ``docs/deletion-compliance.md``: data we never
+    hold needs no deletion, no purge list, and cannot come back from a backup.
     """
 
     item_id: str
@@ -58,7 +63,6 @@ class ParsedListing:
     currency: str
     shipping_cost: float | None
     total_cost: float
-    seller_username: str | None
     condition: str | None
     condition_id: str | None
     buying_options: tuple[str, ...]
@@ -156,11 +160,7 @@ def parse_item_summary(item: dict[str, Any]) -> ParsedListing | None:
             if parsed is not None:
                 shipping = parsed[0]
 
-    seller = item.get("seller")
-    seller_username = None
-    if isinstance(seller, dict):
-        raw_name = seller.get("username")
-        seller_username = str(raw_name) if raw_name else None
+    # item["seller"] is deliberately not read. See ParsedListing.
 
     category_id = None
     categories = item.get("categories")
@@ -184,7 +184,6 @@ def parse_item_summary(item: dict[str, Any]) -> ParsedListing | None:
         currency=currency,
         shipping_cost=shipping,
         total_cost=price + (shipping or 0.0),
-        seller_username=seller_username,
         condition=str(item["condition"]) if item.get("condition") else None,
         condition_id=str(item["conditionId"]) if item.get("conditionId") else None,
         buying_options=buying_options,

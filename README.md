@@ -13,11 +13,21 @@ Tracking commodity hardware prices (the first case is ECC DDR4 server memory) ne
 history, and eBay gives you none — the API shows you what is listed right now. So
 touchstone builds its own history by sampling repeatedly and storing what it saw.
 
-Persisting eBay data brings an obligation with it: any application storing eBay data
-must subscribe to Marketplace Account Deletion notifications and actually erase the
-data when one arrives. The alternative — flipping the "not persisting eBay data"
-exemption toggle — would be a false attestation. touchstone stores seller data, so it
-subscribes, and the purge really deletes.
+Persisting eBay data brings an obligation: any application storing it must subscribe
+to Marketplace Account Deletion notifications and erase the user's data when one
+arrives. The "not persisting eBay data" exemption would be a false attestation, so
+touchstone subscribes.
+
+It then has nothing to erase, by design. **No seller username, user id, or eiasToken
+is stored anywhere** — the API client drops `seller.username` before it reaches the
+database. A listing without its seller is a product offer, not a record about a
+person. That turned out to be far stronger than deleting correctly: no fragile
+identifier matching, no purge to replay after a restore, and no permanent register of
+the people who asked to be forgotten kept in order to prove they were. The claim is
+checkable from the schema instead of from our own logs, and three tests enforce it.
+
+See `docs/deletion-compliance.md`, including what it costs (no seller-level
+deduplication, no seller reputation signal).
 
 ## What it measures, and what it calls it
 
@@ -57,10 +67,11 @@ for looking at the listing before you buy.
 - **Deterministic truth path.** Observed prices, timestamps, presence and absence
   never pass through a model. The LLM proposes structured attributes from free-text
   titles and nothing else.
-- **Read-only against eBay.** touchstone only reads. The one thing it deletes is its
-  own data, on eBay's instruction.
+- **Store no identifier you would later have to erase.** The cheapest way to honour a
+  deletion request is to have nothing to delete.
+- **Read-only against eBay.** touchstone only reads.
 - **Aggregate at write time.** Per-scan statistics are materialized when the scan
-  runs and never recomputed, so honoring a deletion cannot retroactively rewrite
+  runs and never recomputed, so pruning old listings cannot retroactively rewrite
   history. See `docs/measurement-model.md`.
 - **Name the uncertainty.** A number that is an inference is labelled an inference,
   everywhere it appears.
@@ -77,7 +88,8 @@ and no work-domain identifiers in committed files.
 
 ## Status
 
-Charter stage. Plan 001 (foundation) in progress. Nothing has scanned yet.
+Plans 001 (foundation) and 002 (specs, cohorts, deals) complete. Plan 003 is the
+web UI, 004 is deployment and endpoint activation. Nothing has scanned live yet.
 
 ## Development
 

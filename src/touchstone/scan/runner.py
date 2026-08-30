@@ -167,7 +167,6 @@ def _upsert_listing(session: Session, parsed: ParsedListing, observed_at: dateti
             item_id=parsed.item_id,
             title=parsed.title,
             title_hash=title_hash(parsed.title),
-            seller_username=parsed.seller_username,
             condition=parsed.condition,
             condition_id=parsed.condition_id,
             buying_option=_buying_option(parsed.buying_options),

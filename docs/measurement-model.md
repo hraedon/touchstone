@@ -115,26 +115,37 @@ why lot parsing gets dedicated tests.
 
 ## Deletion, and why aggregates are materialized
 
-`listing` rows carry `seller_username`, `seller_user_id`, and `seller_eias_token`.
-That is eBay personal data, and on a Marketplace Account Deletion notification it must
-be irreversibly erased.
+`listing` rows carry **no seller identifier**. The API client drops
+`seller.username` before it reaches the database, so a listing is a product offer
+rather than a record about a person, and an account-deletion notification has nothing
+to erase. See `docs/deletion-compliance.md` for why that is a stronger position than
+deleting correctly would have been.
 
-If per-scan statistics were computed on demand from raw listing rows, then honoring a
-deletion would **retroactively rewrite every historical chart**. A trend line drawn
-today would differ from the same trend line drawn next month, with no indication why,
-and no way to distinguish a real market movement from a purge.
+The aggregate rule below was originally justified by that purge: if statistics were
+computed on demand from raw listing rows, honoring a deletion would retroactively
+rewrite every historical chart. **That justification is gone** — but the rule stays,
+because retention pruning will eventually drop old listing rows to bound table
+growth, and derived statistics would silently rewrite themselves then instead. A
+trend line drawn today must not differ from the same trend line drawn next year.
 
 Therefore:
 
 - `scan_aggregate` is computed and written **at scan time**.
-- It holds no identifiers and no foreign key to `listing`.
+- It holds no foreign key to `listing`.
 - It is **never recomputed**. There is no code path that regenerates it.
-- Purging a seller deletes their `listing` and `listing_observation` rows. Aggregates
-  are untouched and remain a true record of what was observed at the time.
+- Dropping listing rows leaves aggregates untouched, so they remain a true record of
+  what was observed at the time.
 
-An aggregate over many listings is not personal data. An aggregate over one listing
-is that seller's price wearing a disguise, so aggregates with `n < 5` are stored (the
-count is itself a fact) but suppressed from display.
+Aggregates with `n < 5` are stored (the count is itself a fact) but suppressed from
+display: an aggregate over one listing is just that listing's asking price with a
+statistical costume on.
+
+## What is deliberately not stored
+
+Seller identifiers, and nothing else is close. The cost is real and accepted: no
+seller-level deduplication, so one seller with forty identical listings pulls a
+cohort toward their price; and no seller reputation to weigh a flagged bargain by.
+Both are recorded in `docs/deletion-compliance.md`.
 
 ## What the LLM may and may not touch
 

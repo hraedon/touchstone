@@ -190,23 +190,25 @@ def test_capped_scan_records_capped_and_suppresses_disappearances(
     assert session.scalars(select(ListingDisappearance)).all() == []
 
 
-def test_aggregates_survive_a_listing_purge_unchanged(
+def test_aggregates_survive_a_listing_deletion_unchanged(
     session: Session, make_query: MakeQuery
 ) -> None:
-    """The property the entire deletion story rests on.
+    """Recorded history must not change when listing rows go away.
 
-    Honoring an eBay account-deletion notification erases a seller's listings and
-    observations. If aggregates were derived from those rows, every historical chart
-    would silently change. They are materialized at scan time precisely so they
-    don't.
+    The original reason was an account-deletion purge; that reason is gone, because
+    no seller data is stored and a deletion now erases nothing. The property is
+    still load-bearing for retention pruning: old listing rows will eventually be
+    dropped to bound table growth, and if aggregates were derived from them every
+    historical chart would silently rewrite itself. They are materialized at scan
+    time precisely so they don't.
     """
     fake = FakeEbay(
         generations=[
             Generation(
                 items=[
-                    item("v1|1|0", price=100.0, seller="doomed_seller"),
-                    item("v1|2|0", price=200.0, seller="other_seller"),
-                    item("v1|3|0", price=300.0, seller="other_seller"),
+                    item("v1|1|0", price=100.0),
+                    item("v1|2|0", price=200.0),
+                    item("v1|3|0", price=300.0),
                 ]
             )
         ]
@@ -224,8 +226,8 @@ def test_aggregates_survive_a_listing_purge_unchanged(
     ]
     assert before and before[0][1] == 3
 
-    # Purge the seller, exactly as the deletion sink will.
-    session.execute(delete(Listing).where(Listing.seller_username == "doomed_seller"))
+    # Prune a listing, as a retention pass eventually will.
+    session.execute(delete(Listing).where(Listing.item_id == "v1|1|0"))
     session.flush()
 
     assert session.get(Listing, "v1|1|0") is None
@@ -239,7 +241,7 @@ def test_aggregates_survive_a_listing_purge_unchanged(
         (a.cohort_key, a.n, float(a.price_median), float(a.price_mean), float(a.price_min))
         for a in session.scalars(select(ScanAggregate).order_by(ScanAggregate.id)).all()
     ]
-    assert after == before, "a purge must not retroactively rewrite recorded history"
+    assert after == before, "deleting a listing must not rewrite recorded history"
 
 
 def test_scan_is_skipped_when_budget_is_exhausted(
