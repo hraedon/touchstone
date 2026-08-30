@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.13", "3.14"]
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: touchstone
+          POSTGRES_PASSWORD: touchstone
+          POSTGRES_DB: touchstone_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U touchstone"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      # conftest uses this instead of starting its own container. Without it the
+      # suite would try to run docker inside the runner.
+      TOUCHSTONE_TEST_DSN: postgresql+psycopg://touchstone:touchstone@127.0.0.1:5432/touchstone_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+
+      - name: Ruff
+        run: ruff check .
+
+      - name: Mypy (strict)
+        run: mypy
+
+      - name: Tests
+        run: pytest -q
+
+      - name: Migrations apply to an empty database
+        # A green test suite runs against metadata.create_all; it says nothing
+        # about whether the migrations that build production actually work.
+        env:
+          TOUCHSTONE_DSN: postgresql+psycopg://touchstone:touchstone@127.0.0.1:5432/touchstone_migr
+        run: |
+          PGPASSWORD=touchstone psql -h 127.0.0.1 -U touchstone -d postgres \
+            -c "CREATE DATABASE touchstone_migr"
+          alembic upgrade head
+
+      - name: Migrations match the models (no drift)
+        env:
+          TOUCHSTONE_DSN: postgresql+psycopg://touchstone:touchstone@127.0.0.1:5432/touchstone_migr
+        run: |
+          alembic revision --autogenerate -m "drift check" --rev-id driftcheck
+          if grep -qE 'op\.(create|add|drop|alter)' migrations/versions/driftcheck_*.py; then
+            echo "::error::models and migrations have drifted — regenerate the migration"
+            cat migrations/versions/driftcheck_*.py
+            exit 1
+          fi
+          echo "no drift"

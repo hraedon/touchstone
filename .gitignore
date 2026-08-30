@@ -1,0 +1,30 @@
+# Environments and build artifacts
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+
+# Caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.hypothesis/
+
+# Runtime data — never commit observed listing data. It contains eBay seller
+# identifiers, which are exactly the personal data the deletion endpoint exists
+# to erase; a committed copy would be unreachable by the purge.
+samples/
+data/
+*.db
+*.sqlite3
+
+# Secrets
+.env
+*.local
+.identifiers-denylist.local
+deploy/k8s/secret-*.yaml
+
+# OS
+.DS_Store

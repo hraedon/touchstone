@@ -1,0 +1,55 @@
+name: identifier-gate
+on: [push, pull_request]
+jobs:
+  identifier-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # the message scan needs history, not a shallow clone
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Fail closed if a public repo has no denylist configured
+        env:
+          DENYLIST: ${{ secrets.TOUCHSTONE_FORBIDDEN_IDENTIFIERS }}
+        run: |
+          declared=$(python3 -c '
+          import pathlib, tomllib
+          p = pathlib.Path("publication.toml")
+          if not p.is_file():
+              print("unknown")
+          else:
+              try:
+                  data = tomllib.loads(p.read_text(encoding="utf-8"))
+              except Exception:
+                  print("unparseable")
+              else:
+                  print(data.get("publication", {}).get("visibility", "unknown"))
+          ')
+          echo "declared visibility: $declared"
+          if [ "$declared" = "public" ] && [ -z "${DENYLIST//[[:space:]]/}" ]; then
+            echo "::error::publication.toml declares visibility=public but the denylist secret is unset — the identifier gate would silently pass. Configure it."
+            exit 1
+          fi
+      - name: Check for committed work-domain identifiers
+        env:
+          TOUCHSTONE_FORBIDDEN_IDENTIFIERS: ${{ secrets.TOUCHSTONE_FORBIDDEN_IDENTIFIERS }}
+        run: python3 scripts/check_committed_identifiers.py
+      - name: Check commit messages for work-domain identifiers
+        env:
+          TOUCHSTONE_FORBIDDEN_IDENTIFIERS: ${{ secrets.TOUCHSTONE_FORBIDDEN_IDENTIFIERS }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          # On a PR, scan the branch's own commits; on a push, scan what arrived.
+          if [ -n "$BASE_SHA" ]; then
+            range="$BASE_SHA..HEAD"
+          elif [ -n "$BEFORE_SHA" ] && git cat-file -e "$BEFORE_SHA^{commit}" 2>/dev/null; then
+            range="$BEFORE_SHA..HEAD"
+          else
+            range="HEAD~1..HEAD"
+          fi
+          echo "scanning commit messages in $range"
+          python3 scripts/check_committed_identifiers.py --rev-range "$range"

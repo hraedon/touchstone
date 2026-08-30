@@ -1,0 +1,63 @@
+[project]
+name = "touchstone"
+version = "0.1.0"
+description = "eBay price tracking with a real marketplace account-deletion endpoint"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+    "itsdangerous>=2.1",
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "psycopg[binary]>=3.1",
+    # httpx, not urllib: a urllib TLS fingerprint draws a Cloudflare 1010 that
+    # is indistinguishable from the provider being down (estate-wide trap).
+    "httpx>=0.27",
+    # ECDSA P-256 verification of eBay's notification signatures.
+    "cryptography>=42",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.16,<0.17",
+    "mypy>=1.10",
+    "types-psycopg2",
+]
+
+[project.scripts]
+touchstone = "touchstone.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/touchstone"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+src = ["src", "tests"]
+# Alembic writes these; reformatting them makes a regenerated migration show a
+# spurious diff. env.py is ours and stays linted.
+exclude = ["migrations/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
