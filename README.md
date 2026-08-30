@@ -51,7 +51,8 @@ touchstone does not paper over this. It reports three separate things:
 
 ## Scope
 
-**In:** repeated sampling of user-defined eBay searches; per-cohort asking-price
+**In:** repeated sampling of user-defined eBay searches, excluding zero-feedback
+sellers; per-cohort asking-price
 statistics over time; title → structured spec normalization; $/GB comparison within
 cohorts; below-cohort deal flagging; a watchlist of pinned listings; a web UI to
 manage all of it; a compliant, functional deletion endpoint.

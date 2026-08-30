@@ -25,7 +25,7 @@ from touchstone.db.models import (
     ScanStatus,
 )
 from touchstone.ebay.budget import BudgetGuard, today_utc
-from touchstone.ebay.client import Credentials, EbayClient
+from touchstone.ebay.client import Credentials, EbayClient, parse_item_summary
 from touchstone.scan.runner import ScanResult, ScanSkipped, run_scan
 
 MakeQuery = Callable[..., Query]
@@ -341,3 +341,127 @@ def test_budget_is_charged_for_calls_actually_made(
     assert row is not None
     assert row.calls_used == result.api_calls
     assert row.calls_used >= 1
+
+
+class TestSellerFeedbackFloor:
+    """Excluding zero-feedback sellers.
+
+    The score is read in the API client to make the decision and discarded there —
+    it never reaches ParsedListing, so it cannot reach the database. Same boundary
+    that keeps the username out.
+    """
+
+    def test_zero_feedback_sellers_are_excluded(
+        self, session: Session, make_query: MakeQuery
+    ) -> None:
+        fake = FakeEbay(
+            generations=[
+                Generation(
+                    items=[
+                        item("v1|good|0", price=100.0, feedback_score=250),
+                        item("v1|scam|0", price=5.0, feedback_score=0),
+                    ]
+                )
+            ]
+        )
+        url = fake.start()
+        query = make_query()
+        query.min_seller_feedback = 1
+        try:
+            result = run(session, fake, query, url)
+        finally:
+            fake.stop()
+
+        assert result.observed == 1
+        assert result.excluded_low_feedback == 1
+        assert session.get(Listing, "v1|good|0") is not None
+        assert session.get(Listing, "v1|scam|0") is None
+
+    def test_the_exclusion_count_is_recorded_on_the_scan(
+        self, session: Session, make_query: MakeQuery
+    ) -> None:
+        """A filter that quietly eats most of a result set is otherwise invisible —
+        the numbers just look calmer."""
+        items = [item(f"v1|z{i}|0", price=5.0, feedback_score=0) for i in range(4)]
+        items.append(item("v1|good|0", price=100.0, feedback_score=99))
+        fake = FakeEbay(generations=[Generation(items=items)])
+        url = fake.start()
+        query = make_query()
+        query.min_seller_feedback = 1
+        try:
+            run(session, fake, query, url)
+        finally:
+            fake.stop()
+
+        (scan,) = session.scalars(select(Scan)).all()
+        assert scan.excluded_low_feedback == 4
+        assert scan.result_count == 1
+
+    def test_the_threshold_used_is_recorded_per_scan(
+        self, session: Session, make_query: MakeQuery
+    ) -> None:
+        """Changing the floor changes the population being sampled, which makes the
+        series discontinuous. A discontinuity you cannot see is indistinguishable
+        from a market move."""
+        fake = FakeEbay(
+            generations=[Generation(items=[item("v1|a|0", price=100.0, feedback_score=50)])]
+        )
+        url = fake.start()
+        query = make_query()
+        try:
+            query.min_seller_feedback = 1
+            run(session, fake, query, url)
+            query.min_seller_feedback = 25
+            run(session, fake, query, url)
+        finally:
+            fake.stop()
+
+        thresholds = [
+            s.min_seller_feedback
+            for s in session.scalars(select(Scan).order_by(Scan.id)).all()
+        ]
+        assert thresholds == [1, 25]
+
+    def test_a_missing_feedback_score_is_kept_not_dropped(
+        self, session: Session, make_query: MakeQuery
+    ) -> None:
+        """Unknown is not the same as zero. Dropping on absence would silently
+        discard legitimate listings whenever eBay omits the field; this is a noise
+        filter, so it should fail toward including too much, where the effect shows
+        up in the data, rather than excluding too much, where it does not."""
+        fake = FakeEbay(
+            generations=[Generation(items=[item("v1|a|0", price=100.0, feedback_score=None)])]
+        )
+        url = fake.start()
+        query = make_query()
+        query.min_seller_feedback = 1
+        try:
+            result = run(session, fake, query, url)
+        finally:
+            fake.stop()
+
+        assert result.observed == 1
+        assert result.excluded_low_feedback == 0
+
+    def test_threshold_of_zero_disables_the_filter(
+        self, session: Session, make_query: MakeQuery
+    ) -> None:
+        fake = FakeEbay(
+            generations=[Generation(items=[item("v1|a|0", price=5.0, feedback_score=0)])]
+        )
+        url = fake.start()
+        query = make_query()
+        query.min_seller_feedback = 0
+        try:
+            result = run(session, fake, query, url)
+        finally:
+            fake.stop()
+
+        assert result.observed == 1
+
+    def test_the_feedback_score_never_reaches_a_parsed_listing(self) -> None:
+        raw = item("v1|a|0", price=100.0, feedback_score=1234)
+        parsed = parse_item_summary(raw, min_seller_feedback=1)
+        assert parsed is not None
+        assert "1234" not in repr(parsed)
+        assert not any("feedback" in f for f in type(parsed).__dataclass_fields__)

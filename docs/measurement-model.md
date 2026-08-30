@@ -140,6 +140,37 @@ Aggregates with `n < 5` are stored (the count is itself a fact) but suppressed f
 display: an aggregate over one listing is just that listing's asking price with a
 statistical costume on.
 
+## Which listings are sampled
+
+The index does not measure "all active listings". It measures **active listings from
+sellers with at least `min_seller_feedback` feedback**, default 1 — which excludes
+zero-feedback accounts, where the obvious scam listings cluster. Those listings are
+dropped in the API client, before anything is stored.
+
+This is a noise filter, not a security control. It removes the crude fakes; it does
+not stop a scammer who bought an aged account. And it excludes genuinely new,
+legitimate sellers along with the bad ones. Both are accepted.
+
+Excluding them arguably improves the index as well as the deal feed: scam listings
+are typically priced far *below* market to bait, so leaving them in would drag a
+cohort's floor — and the floor is exactly what deal scoring compares against.
+
+Two things are recorded on every scan so this stays honest:
+
+- `scan.min_seller_feedback` — the threshold actually applied. Changing it changes
+  the population being sampled, so the series becomes discontinuous at that point.
+  A discontinuity you cannot see is indistinguishable from a market move.
+- `scan.excluded_low_feedback` — how many listings it removed. A filter that quietly
+  eats most of a result set is otherwise invisible; the numbers just look calmer.
+
+A listing whose seller has **no** feedback score reported (as opposed to a score of
+zero) is kept. Unknown is not zero, and dropping on absence would silently discard
+legitimate listings whenever eBay omits the field.
+
+The seller's feedback score is read in the client to make this decision and discarded
+there. It never reaches `ParsedListing` and so cannot reach the database — the same
+boundary that keeps the username out.
+
 ## What is deliberately not stored
 
 Seller identifiers, and nothing else is close. The cost is real and accepted: no

@@ -30,13 +30,21 @@ def item(
     condition_id: str = "3000",
     currency: str = "USD",
     buying_options: list[str] | None = None,
+    feedback_score: int | None = 1234,
 ) -> dict[str, Any]:
-    """Build one ItemSummary in the documented response shape."""
+    """Build one ItemSummary in the documented response shape.
+
+    ``feedback_score=None`` omits the field entirely, which is how eBay behaves for
+    some listings and is distinct from a score of zero.
+    """
+    seller_node: dict[str, Any] = {"username": seller, "feedbackPercentage": "99.5"}
+    if feedback_score is not None:
+        seller_node["feedbackScore"] = feedback_score
     node: dict[str, Any] = {
         "itemId": item_id,
         "title": title,
         "price": {"value": f"{price:.2f}", "currency": currency},
-        "seller": {"username": seller, "feedbackPercentage": "99.5", "feedbackScore": 1234},
+        "seller": seller_node,
         "condition": condition,
         "conditionId": condition_id,
         "buyingOptions": buying_options if buying_options is not None else ["FIXED_PRICE"],

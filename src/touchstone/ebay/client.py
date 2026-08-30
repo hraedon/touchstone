@@ -77,6 +77,9 @@ class SearchPage:
     total: int
     offset: int
     limit: int
+    # Listings dropped for insufficient seller feedback. Counted so a filter that
+    # quietly eats most of a result set is visible rather than merely effective.
+    excluded_low_feedback: int = 0
 
 
 @dataclass
@@ -139,16 +142,50 @@ def _money(node: Any) -> tuple[float, str] | None:
         return None
 
 
-def parse_item_summary(item: dict[str, Any]) -> ParsedListing | None:
-    """Reduce an ItemSummary to a ParsedListing, or None if unusable.
+def seller_feedback_score(item: dict[str, Any]) -> int | None:
+    """The seller's feedback count, or None if eBay did not supply one.
 
-    A summary with no id or no price cannot be an observation, so it is dropped
-    rather than stored with invented values.
+    Read here and discarded here. The score is used to decide whether to keep the
+    listing and is never returned to the caller, so it cannot reach the database —
+    the same boundary that keeps the username out.
+    """
+    seller = item.get("seller")
+    if not isinstance(seller, dict):
+        return None
+    raw = seller.get("feedbackScore")
+    if isinstance(raw, bool) or raw is None:
+        return None
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, str) and raw.strip().isdigit():
+        return int(raw.strip())
+    return None
+
+
+def parse_item_summary(
+    item: dict[str, Any], *, min_seller_feedback: int = 0
+) -> ParsedListing | None:
+    """Reduce an ItemSummary to a ParsedListing, or None if it should be skipped.
+
+    Dropped when the summary has no id or no price (it cannot be an observation),
+    or when the seller's feedback score is below ``min_seller_feedback``.
+
+    A missing feedback score is treated as *unknown, therefore kept*. Dropping on
+    absence would silently discard legitimate listings whenever eBay omits the
+    field, and this is a noise filter rather than a security control — it should
+    fail toward including too much, where the effect is visible in the data, not
+    toward excluding too much, where it is invisible.
     """
     item_id = item.get("itemId")
     priced = _money(item.get("price"))
     if not item_id or priced is None:
         return None
+
+    if min_seller_feedback > 0:
+        score = seller_feedback_score(item)
+        if score is not None and score < min_seller_feedback:
+            return None
+
     price, currency = priced
 
     shipping: float | None = None
@@ -193,6 +230,16 @@ def parse_item_summary(item: dict[str, Any]) -> ParsedListing | None:
     )
 
 
+def _below_feedback(item: dict[str, Any], minimum: int) -> bool:
+    """Whether this summary was dropped for feedback rather than for being unusable.
+
+    Only used to attribute a drop to the right counter; the score itself goes no
+    further.
+    """
+    score = seller_feedback_score(item)
+    return score is not None and score < minimum
+
+
 @dataclass
 class EbayClient:
     """Browse search and rate-limit reads against one marketplace."""
@@ -234,6 +281,7 @@ class EbayClient:
         limit: int = MAX_LIMIT,
         category_ids: str | None = None,
         filter_expr: str | None = None,
+        min_seller_feedback: int = 0,
     ) -> SearchPage:
         """One Browse search call. Costs exactly one unit of the daily budget."""
         if limit > MAX_LIMIT:
@@ -261,21 +309,34 @@ class EbayClient:
 
         summaries = body.get("itemSummaries") or []
         listings: list[ParsedListing] = []
+        low_feedback = 0
+        unusable = 0
         for raw in summaries:
             if not isinstance(raw, dict):
+                unusable += 1
                 continue
-            parsed = parse_item_summary(raw)
+            parsed = parse_item_summary(raw, min_seller_feedback=min_seller_feedback)
             if parsed is not None:
                 listings.append(parsed)
-        dropped = len(summaries) - len(listings)
-        if dropped:
-            log.warning("dropped %d unusable item summaries (no id or no price)", dropped)
+            elif min_seller_feedback > 0 and _below_feedback(raw, min_seller_feedback):
+                low_feedback += 1
+            else:
+                unusable += 1
+        if unusable:
+            log.warning("dropped %d unusable item summaries (no id or no price)", unusable)
+        if low_feedback:
+            log.info(
+                "excluded %d listings from sellers below %d feedback",
+                low_feedback,
+                min_seller_feedback,
+            )
 
         return SearchPage(
             listings=listings,
             total=int(body.get("total") or 0),
             offset=int(body.get("offset") or offset),
             limit=int(body.get("limit") or limit),
+            excluded_low_feedback=low_feedback,
         )
 
     def rate_limit(self, api_name: str = "Browse", api_context: str = "buy") -> RateLimit | None:

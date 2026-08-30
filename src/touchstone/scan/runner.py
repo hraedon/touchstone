@@ -56,6 +56,7 @@ class ScanResult:
     api_calls: int
     capped: bool
     deals: int = 0
+    excluded_low_feedback: int = 0
 
 
 def _buying_option(options: tuple[str, ...]) -> BuyingOption:
@@ -287,6 +288,7 @@ def run_scan(
     calls = 0
     total_reported = 0
     capped = False
+    excluded = 0
 
     try:
         for page_index in range(allowed_pages):
@@ -301,9 +303,11 @@ def run_scan(
                 limit=page_limit,
                 category_ids=query.category_ids,
                 filter_expr=query.filter_expr,
+                min_seller_feedback=query.min_seller_feedback,
             )
             calls += 1
             total_reported = page.total
+            excluded += page.excluded_low_feedback
 
             for parsed in page.listings:
                 # Within one scan a listing is recorded once, even if eBay's
@@ -311,7 +315,10 @@ def run_scan(
                 # mid-scan). The unique constraint would reject the second row.
                 seen.setdefault(parsed.item_id, parsed)
 
-            if not page.listings or offset + page_limit >= page.total:
+            # `page.listings` can be empty because everything on the page was
+            # filtered out, which is not the end of the result set. Page on until
+            # eBay's own total says we are done.
+            if offset + page_limit >= page.total:
                 break
 
         # The result set exceeds what eBay will page through, so what we see is a
@@ -416,6 +423,8 @@ def run_scan(
         scan.api_calls = calls
         scan.result_count = len(seen)
         scan.capped = capped
+        scan.min_seller_feedback = query.min_seller_feedback
+        scan.excluded_low_feedback = excluded
         query.last_scanned_at = observed_at
         query.scan_requested_at = None
         guard.record(calls)
@@ -431,6 +440,7 @@ def run_scan(
             api_calls=calls,
             capped=capped,
             deals=flagged,
+            excluded_low_feedback=excluded,
         )
 
     except Exception as exc:

@@ -40,20 +40,63 @@ SAMPLE: dict[str, Any] = {
 }
 
 
+# Tables holding one row per listing (or per listing-derived fact). Nothing here may
+# carry a value derived from an individual seller — that is what would make a row
+# attributable to a person.
+PER_LISTING_TABLES = {
+    "listing",
+    "listing_observation",
+    "listing_disappearance",
+    "scan_aggregate",
+    "item_spec",
+    "deal",
+    "watch",
+}
+
+# Names that are an eBay user identifier outright, wherever they appear.
+IDENTIFIER_NAMES = {
+    "seller_username",
+    "seller_user_id",
+    "seller_eias_token",
+    "username",
+    "user_id",
+    "eias_token",
+}
+
+SELLER_WORDS = ("seller", "username", "eias")
+
+
+def _identifier_columns(table_name: str, column_names: list[str]) -> list[str]:
+    """Columns that could make a row attributable to an individual seller.
+
+    Deliberately not a blanket ban on the word "seller". `query.min_seller_feedback`
+    and `scan.excluded_low_feedback` are a configured threshold and a counter — they
+    describe the *filter*, not any particular seller, and live on config/metadata
+    tables rather than on a listing. The invariant is about attribution, not
+    vocabulary, so the check is scoped to where attribution could happen.
+    """
+    offenders = []
+    for name in column_names:
+        lowered = name.lower()
+        attributable = table_name in PER_LISTING_TABLES and any(
+            w in lowered for w in SELLER_WORDS
+        )
+        if lowered in IDENTIFIER_NAMES or attributable:
+            offenders.append(f"{table_name}.{name}")
+    return offenders
+
+
 class TestNoPlaceToStoreASeller:
     """The structural guarantee. If these fail, the whole design is undone."""
 
     def test_no_table_has_a_seller_column(self) -> None:
         offenders: list[str] = []
         for table in Base.metadata.tables.values():
-            for column in table.columns:
-                name = column.name.lower()
-                if "seller" in name or name in {"username", "user_id", "eias_token"}:
-                    offenders.append(f"{table.name}.{column.name}")
+            offenders += _identifier_columns(table.name, [c.name for c in table.columns])
         assert offenders == [], (
-            "a column exists that could hold an eBay user identifier: "
-            f"{offenders}. Storing one reintroduces the purge, the replay after "
-            "restore, and the register of deleted users."
+            "a column exists that could attribute a row to an individual eBay "
+            f"seller: {offenders}. Storing one reintroduces the purge, the replay "
+            "after restore, and the register of deleted users."
         )
 
     def test_the_live_schema_agrees(self, engine: Engine) -> None:
@@ -61,10 +104,25 @@ class TestNoPlaceToStoreASeller:
         inspector = inspect(engine)
         offenders: list[str] = []
         for table_name in inspector.get_table_names():
-            for column in inspector.get_columns(table_name):
-                if "seller" in column["name"].lower():
-                    offenders.append(f"{table_name}.{column['name']}")
+            offenders += _identifier_columns(
+                table_name, [c["name"] for c in inspector.get_columns(table_name)]
+            )
         assert offenders == []
+
+    def test_the_check_would_catch_a_reintroduced_identifier(self) -> None:
+        """Guards the guard's guard. The scoping above narrowed what counts as a
+        violation, so prove the narrowing did not defang it."""
+        assert _identifier_columns("listing", ["seller_username"]) == [
+            "listing.seller_username"
+        ]
+        assert _identifier_columns("listing", ["seller_feedback_score"]) == [
+            "listing.seller_feedback_score"
+        ]
+        assert _identifier_columns("deletion_receipt", ["username"]) == [
+            "deletion_receipt.username"
+        ]
+        # ...and that a threshold on a config table still passes.
+        assert _identifier_columns("query", ["min_seller_feedback"]) == []
 
     def test_the_client_does_not_even_parse_the_seller(self) -> None:
         """Dropped at the API boundary, so an identifier never enters the process.

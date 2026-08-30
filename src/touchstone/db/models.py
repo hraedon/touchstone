@@ -96,6 +96,12 @@ class Query(Base):
     # How deep to page. Each page is one API call against a 5,000/day budget.
     max_pages: Mapped[int] = mapped_column(Integer, default=5)
 
+    # Skip listings from sellers below this feedback score. Default 1 excludes
+    # zero-feedback accounts, which is where the obvious scam listings cluster.
+    # This changes which population is being measured, so the value actually used
+    # is recorded on every Scan — see Scan.min_seller_feedback.
+    min_seller_feedback: Mapped[int] = mapped_column(Integer, default=1)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     scans: Mapped[list[Scan]] = relationship(back_populates="query")
@@ -117,6 +123,15 @@ class Scan(Base):
 
     api_calls: Mapped[int] = mapped_column(Integer, default=0)
     result_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    # The seller-feedback floor actually applied, recorded per scan rather than
+    # read from the query at display time. Raising or lowering it changes the
+    # population being sampled, which makes the series discontinuous — and a
+    # discontinuity you cannot see is indistinguishable from a market move.
+    min_seller_feedback: Mapped[int] = mapped_column(Integer, default=0)
+    # How many listings that floor removed. A filter that silently eats most of a
+    # result set is otherwise invisible: the numbers just look quieter.
+    excluded_low_feedback: Mapped[int] = mapped_column(Integer, default=0)
     # eBay caps a result set at 10,000. A capped scan's "disappearances" are an
     # artifact of the window moving, not market events, so diffing is skipped.
     capped: Mapped[bool] = mapped_column(Boolean, default=False)

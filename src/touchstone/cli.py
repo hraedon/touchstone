@@ -60,7 +60,10 @@ def cmd_queries_list(args: argparse.Namespace) -> int:
         for q in rows:
             state = "enabled" if q.enabled else "disabled"
             last = q.last_scanned_at.isoformat() if q.last_scanned_at else "never"
-            print(f"{q.id:>4}  {q.name:<30} {state:<9} every {q.cadence_minutes}m  last={last}")
+            print(
+                f"{q.id:>4}  {q.name:<30} {state:<9} every {q.cadence_minutes}m  "
+                f"minfb={q.min_seller_feedback}  last={last}"
+            )
     return 0
 
 
@@ -74,6 +77,7 @@ def cmd_queries_add(args: argparse.Namespace) -> int:
             filter_expr=args.filter,
             cadence_minutes=args.cadence,
             max_pages=args.max_pages,
+            min_seller_feedback=args.min_feedback,
         )
         session.add(query)
         session.commit()
@@ -103,10 +107,16 @@ def cmd_scan(args: argparse.Namespace) -> int:
             session.commit()
 
     capped = "  [CAPPED: result set exceeds 10,000; narrow the filter]" if result.capped else ""
+    excluded = (
+        f", {result.excluded_low_feedback} excluded (low seller feedback)"
+        if result.excluded_low_feedback
+        else ""
+    )
     print(
         f"scan {result.scan_id}: {result.observed} listings "
-        f"({result.new_listings} new), {result.disappearances} disappeared, "
-        f"{result.cohorts} cohorts, {result.api_calls} API calls{capped}"
+        f"({result.new_listings} new){excluded}, {result.disappearances} disappeared, "
+        f"{result.cohorts} cohorts, {result.deals} deals, "
+        f"{result.api_calls} API calls{capped}"
     )
     return 0
 
@@ -211,6 +221,13 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--filter", help="raw eBay Browse filter expression")
     add.add_argument("--cadence", type=int, default=60, help="minutes between scans")
     add.add_argument("--max-pages", type=int, default=5, help="pages per scan (1 API call each)")
+    add.add_argument(
+        "--min-feedback",
+        type=int,
+        default=1,
+        help="skip sellers below this feedback score (0 disables; default 1 "
+        "excludes zero-feedback accounts)",
+    )
     add.set_defaults(func=cmd_queries_add)
 
     scan = sub.add_parser("scan", help="run one scan now")

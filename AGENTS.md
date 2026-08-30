@@ -15,6 +15,12 @@ model to fill in a price, stop.
 **Read-only against eBay.** touchstone issues GETs. It never bids, buys, lists,
 messages, or writes anything to eBay.
 
+**Seller data may be *read* to make a decision, never *stored*.** The API client
+reads `seller.feedbackScore` to drop zero-feedback listings and discards it in the
+same function. That is the pattern: decide in the client, keep nothing. If a feature
+needs seller data, ask whether it needs it at decision time or at query time — only
+the first is available.
+
 **Never store an eBay seller identifier.** No username, no userId, no eiasToken, in
 any table. The API client drops `seller.username` before it reaches the database
 layer. This is what makes the deletion endpoint trivially correct — there is nothing
