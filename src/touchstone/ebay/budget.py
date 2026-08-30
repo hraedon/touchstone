@@ -27,8 +27,11 @@ log = logging.getLogger("touchstone.budget")
 
 DEFAULT_DAILY_LIMIT = 5000
 
-# Leave headroom so a manual query or the deletion sink's key fetch is never the
-# call that runs the application into the wall.
+# Headroom so an operator's manual scan is never the call that runs the application
+# into the wall. Note this does NOT cover the deletion sink's getPublicKey call —
+# that is the Notification API, a separate allowance — but that key is cached for an
+# hour precisely because eBay warns an uncached fetch per notification can exceed
+# call limits during a burst.
 RESERVE = 100
 
 
