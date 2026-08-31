@@ -40,6 +40,15 @@
 > found its bugs from a review pointed at two named hazards — neither would have
 > surfaced from reading the diff.
 >
+> **A fifth defect found by deploying it**, which no review would have caught: the
+> sink's external callback returned `Bad Gateway` for a moment during its own
+> rollout. `maxUnavailable: 0` guarantees a ready pod exists throughout, but not that
+> the router has stopped sending to the old one — endpoint removal is asynchronous,
+> so a container that stops listening the instant it is marked for deletion still
+> receives traffic. Both served Deployments now drain for five seconds in `preStop`.
+> Verified by probing the callback 120 times across a full rollout of both: 120/200s,
+> where the same probe would previously have caught the gap.
+>
 > **Still outstanding:** touchstone has no umans credential of its own, so
 > `touchstone-extract-secrets` does not exist and extraction runs the regex path
 > only. The secret reference is `optional: true` precisely so that degrades rather
