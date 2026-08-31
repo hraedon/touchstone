@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from tests.fake_ebay import FakeEbay, Generation, item
@@ -401,3 +402,56 @@ class TestWriterLock:
             close_all_sessions()
             engine.dispose()
             other.dispose()
+
+
+class TestTheRecoveryPathCannotAbortThePass:
+    """The fix for lost spend introduced its own way to stop a pass.
+
+    Committing the failed scan can itself raise — typically when the failure *was* a
+    database error — and the replay that follows can raise too. If either escapes,
+    a single bad query takes the rest of the pass with it, which is precisely what
+    the error handling exists to prevent.
+    """
+
+    def test_a_database_that_refuses_every_write_still_lets_the_pass_continue(
+        self, session: Session, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        make_query(session, "aaa-doomed", last_scanned_at=None)
+        make_query(session, "bbb-fine", last_scanned_at=None)
+
+        reached: list[str] = []
+        real_scan = schedule.run_scan
+
+        def scan(session_: Session, client: object, query: Query, **kw: object):  # type: ignore[no-untyped-def]
+            reached.append(query.name)
+            if query.name == "aaa-doomed":
+                raise RuntimeError("the connection went away mid-scan")
+            return real_scan(session_, client, query, **kw)  # type: ignore[arg-type]
+
+        commits = {"n": 0}
+        real_commit = Session.commit
+
+        def flaky_commit(self: Session) -> None:
+            commits["n"] += 1
+            # Refuse the commit of the failure *and* the replay that follows it.
+            if commits["n"] <= 2:
+                raise OperationalError("COMMIT", {}, Exception("write refused"))
+            real_commit(self)
+
+        monkeypatch.setattr(schedule, "run_scan", scan)
+        monkeypatch.setattr(Session, "commit", flaky_commit)
+
+        fake = FakeEbay(generations=[Generation(items=[item("v1|1|0", price=100.0)])])
+        url = fake.start()
+        try:
+            with EbayClient(credentials=Credentials("id", "secret"), base_url=url) as client:
+                result = schedule.run_tick(session, client, now=NOW)
+        finally:
+            fake.stop()
+
+        assert reached == ["aaa-doomed", "bbb-fine"], (
+            "the pass must reach the second query even when nothing can be written "
+            "about the first"
+        )
+        assert result.failed == 1
+        assert result.scanned == 1

@@ -203,15 +203,32 @@ def run_tick(
                 session.commit()
                 guard.committed()
             except Exception:
-                session.rollback()
-                replayed = guard.replay_uncommitted()
-                session.commit()
-                log.error(
-                    "could not record the failed scan of %s; re-recorded %d spent "
-                    "call(s) against the ledger so the allowance is not overstated",
-                    query.name,
-                    replayed,
-                )
+                # The transaction carrying the failure could not be committed —
+                # typically because the failure was itself a database error. Recover
+                # the session and put the spend back on its own.
+                try:
+                    session.rollback()
+                    replayed = guard.replay_uncommitted()
+                    session.commit()
+                    log.error(
+                        "could not record the failed scan of %s; re-recorded %d "
+                        "spent call(s) so the allowance is not overstated",
+                        query.name,
+                        replayed,
+                    )
+                except Exception:
+                    # Nothing further can be written. Say so loudly rather than
+                    # letting this escape and abort a pass whose remaining queries
+                    # are unaffected — and note that this guard's own in-memory
+                    # accounting still holds the spend, so the rest of THIS pass
+                    # stays correct even though the ledger now understates it.
+                    session.rollback()
+                    log.exception(
+                        "could not record the spend from the failed scan of %s at "
+                        "all; the ledger now understates today's usage. This pass is "
+                        "still accurate, a later one will not be.",
+                        query.name,
+                    )
             continue
 
         session.commit()
