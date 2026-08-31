@@ -33,7 +33,7 @@ spec:
               type: RuntimeDefault
           containers:
             - name: extractor
-              image: ghcr.io/hraedon/touchstone@sha256:e209860b26472b797f06887c8ef754c29ad19c0122f5a55681af542ad4f3b4d2
+              image: ghcr.io/hraedon/touchstone@sha256:94120a8f09064781c48357f9c734bb3b6577871bdba04dd04f89cb12f656d016
               imagePullPolicy: IfNotPresent
               command: ["touchstone", "extract"]
               env:
