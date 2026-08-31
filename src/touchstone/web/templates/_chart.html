@@ -1,0 +1,58 @@
+{# Line plot. All geometry arrives precomputed from web/charts.py; this template
+   does no arithmetic, which is what keeps the geometry unit-testable. #}
+{% macro line_chart(plot, caption) %}
+{% if plot.empty %}
+  <p class="ts-chart-empty">Nothing drawable in this window. {{ caption }}</p>
+{% else %}
+<svg class="ts-chart" viewBox="0 0 {{ plot.width }} {{ plot.height }}" role="img"
+     aria-label="{{ caption }}" preserveAspectRatio="xMidYMid meet">
+  <line class="axis" x1="{{ plot.left }}" y1="{{ plot.bottom }}" x2="{{ plot.right }}" y2="{{ plot.bottom }}"/>
+  <line class="axis" x1="{{ plot.left }}" y1="{{ plot.top }}" x2="{{ plot.left }}" y2="{{ plot.bottom }}"/>
+  {% for tick in plot.y_ticks %}
+    <text class="tick" x="{{ plot.left - 6 }}" y="{{ tick.pos + 3 }}" text-anchor="end">{{ tick.label }}</text>
+  {% endfor %}
+  {% for tick in plot.x_ticks %}
+    <text class="tick" x="{{ tick.pos }}" y="{{ plot.height - 8 }}" text-anchor="middle">{{ tick.label }}</text>
+  {% endfor %}
+  {% for rule in plot.rules %}
+    <line class="rule" x1="{{ rule.x }}" y1="{{ plot.top }}" x2="{{ rule.x }}" y2="{{ plot.bottom }}">
+      <title>{{ rule.label }} — {{ rule.detail }}</title>
+    </line>
+    <text class="rule-label" x="{{ rule.x + 3 }}" y="{{ plot.top + 9 }}">break</text>
+  {% endfor %}
+  {% for line in plot.lines %}
+    {% for segment in line.segments %}
+      <path class="line line--{{ line.role }}" d="{{ segment }}"><title>{{ line.label }}</title></path>
+    {% endfor %}
+    {% for dot in line.dots %}
+      <circle class="dot{% if dot.flagged %} dot--flagged{% endif %}"
+              cx="{{ dot.x }}" cy="{{ dot.y }}" r="2.2">
+        <title>{{ line.label }} {{ dot.value | money(3) }} on {{ dot.at | stamp }}{% if dot.flagged %} — capped scan{% endif %}</title>
+      </circle>
+    {% endfor %}
+  {% endfor %}
+</svg>
+{% endif %}
+{% endmacro %}
+
+{% macro bar_chart(plot, caption) %}
+{% if plot.empty %}
+  <p class="ts-chart-empty">No listings have left the tracked pool in this window.</p>
+{% else %}
+<svg class="ts-chart" viewBox="0 0 {{ plot.width }} {{ plot.height }}" role="img"
+     aria-label="{{ caption }}" preserveAspectRatio="xMidYMid meet">
+  <line class="axis" x1="{{ plot.left }}" y1="{{ plot.bottom }}" x2="{{ plot.right }}" y2="{{ plot.bottom }}"/>
+  {% for tick in plot.y_ticks %}
+    <text class="tick" x="{{ plot.left - 6 }}" y="{{ tick.pos + 3 }}" text-anchor="end">{{ tick.label }}</text>
+  {% endfor %}
+  {% for tick in plot.x_ticks %}
+    <text class="tick" x="{{ tick.pos }}" y="{{ plot.height - 8 }}" text-anchor="middle">{{ tick.label }}</text>
+  {% endfor %}
+  {% for bar in plot.bars %}
+    <rect class="bar" x="{{ bar.x }}" y="{{ bar.y }}" width="{{ bar.width }}" height="{{ bar.height }}">
+      <title>{{ bar.count }} listing(s) stopped appearing, detected {{ bar.at | stamp }}</title>
+    </rect>
+  {% endfor %}
+</svg>
+{% endif %}
+{% endmacro %}

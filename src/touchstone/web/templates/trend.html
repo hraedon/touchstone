@@ -1,0 +1,188 @@
+{% extends "base.html" %}
+{% from "_chart.html" import line_chart, bar_chart %}
+{% block title %}touchstone — {{ trend.query.name }} trend{% endblock %}
+{% block content %}
+<h1>{{ trend.query.name }}</h1>
+<p class="ts-sub mono">{{ trend.query.q }}</p>
+
+<div class="ts-preamble">
+  <strong>These are asking prices, not transaction prices.</strong> Every line below
+  is drawn from what sellers were asking for listings that were still active when the
+  scan ran. eBay exposes no completed-sale data to this application, so no line here
+  can be a record of what anything changed hands for — and because badly-priced stock
+  stays in the visible pool while correctly-priced stock leaves it, the asking index
+  sits above whatever the true clearing level is.
+</div>
+
+<div class="ts-panel">
+  <form method="get" class="ts-actions">
+    <label class="ts-fig-label" for="days">Window</label>
+    <select id="days" name="days">
+      {% for choice in window_choices %}
+        <option value="{{ choice }}" {% if choice == days %}selected{% endif %}>{{ choice }} days</option>
+      {% endfor %}
+    </select>
+    <label class="ts-fig-label" for="metric">Metric</label>
+    <select id="metric" name="metric">
+      <option value="per_gb" {% if metric == 'per_gb' %}selected{% endif %}>asking $/GB</option>
+      <option value="price" {% if metric == 'price' %}selected{% endif %}>asking price</option>
+    </select>
+    {% if cohort %}<input type="hidden" name="cohort" value="{{ cohort }}">{% endif %}
+    <button type="submit">Apply</button>
+    {% if cohort %}<a href="{{ url_for('query_trend', query_id=trend.query.id) }}">Show all cohorts</a>{% endif %}
+  </form>
+
+  {% if trend.discontinuities %}
+  <ul class="ts-breaks">
+    {% for marker in trend.discontinuities %}
+      <li>
+        <span class="when">{{ marker.at | stamp }}</span> — <strong>{{ marker.label }}</strong>
+        ({{ marker.note }}). {{ marker.detail }}
+      </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if trend.capped_scan_count %}
+  <p class="ts-panel-note" style="margin-top: var(--space-3)">
+    <span class="ts-badge ts-badge--warn">capped</span>
+    {{ trend.capped_scan_count }} scan(s) in this query's history hit eBay's 10,000-result
+    ceiling. A capped scan sampled a moving window rather than the whole result set,
+    and its disappearances were deliberately not recorded. Points from those scans are
+    marked on the charts.
+  </p>
+  {% endif %}
+</div>
+
+{% for panel in panels %}
+<div class="ts-panel">
+  <h3 class="mono">{{ panel.series.cohort_key }}</h3>
+  <p class="ts-panel-note">
+    {% if panel.series.legacy_key %}
+      <span class="ts-badge ts-badge--warn">pre-capacity cohort</span>
+      Grouped by query and condition only, before titles were read. Does not continue
+      into, or from, any cohort keyed on the full spec.
+    {% elif panel.series.unspecced %}
+      <span class="ts-badge">unspecced</span>
+      Listings whose capacity could not be read. No $/GB exists for them, and they are
+      deliberately kept out of every real cohort so they cannot corrupt the reference
+      other listings are scored against.
+    {% endif %}
+    Latest sample: n={{ panel.series.latest.n }},
+    {% if panel.series.latest.suppressed %}
+      <span class="ts-suppressed">statistics withheld — fewer than {{ MIN_COHORT_N }} listings</span>
+    {% else %}
+      median asking {{ panel.series.latest.price_median | money }} {{ panel.series.latest.currency }},
+      {% if panel.series.latest.per_gb_median is not none %}
+        {{ panel.series.latest.per_gb_median | per_gb }} /GB asking
+      {% else %}
+        <span class="ts-unknown">no $/GB (capacity unknown for this cohort)</span>
+      {% endif %}
+    {% endif %}
+  </p>
+
+  {{ line_chart(panel.plot, "Asking " ~ ("$/GB" if metric == 'per_gb' else "price") ~ " over time for cohort " ~ panel.series.cohort_key) }}
+
+  <div class="ts-legend">
+    <span><i class="swatch swatch--median"></i>median asking</span>
+    <span><i class="swatch swatch--p10"></i>p10 asking</span>
+    <span><i class="swatch swatch--rule"></i>discontinuity — do not read across</span>
+    <span><i class="swatch swatch--flagged"></i>capped scan</span>
+    <span>gaps = suppressed (n &lt; {{ MIN_COHORT_N }}), never interpolated</span>
+  </div>
+
+  <div class="ts-scroll" style="margin-top: var(--space-3)">
+  <table class="ts-table">
+    <thead><tr>
+      <th>Observed</th><th class="num">n</th><th class="num">min asking</th>
+      <th class="num">p10 asking</th><th class="num">median asking</th>
+      <th class="num">median asking $/GB</th><th class="num">floor</th><th></th>
+    </tr></thead>
+    <tbody>
+    {% for point in panel.series.points | reverse %}
+      <tr {% if point.suppressed %}class="ts-suppressed"{% endif %}>
+        <td class="mono">{{ point.observed_at | stamp }}</td>
+        <td class="num">{{ point.n }}</td>
+        {% if point.suppressed %}
+          <td class="num" colspan="4">withheld — fewer than {{ MIN_COHORT_N }} listings, so these figures would describe the listings rather than a market</td>
+        {% else %}
+          <td class="num"><span class="ts-fig">{{ point.price_min | money }}</span></td>
+          <td class="num"><span class="ts-fig">{{ point.price_p10 | money }}</span></td>
+          <td class="num"><span class="ts-fig">{{ point.price_median | money }}</span></td>
+          <td class="num"><span class="ts-fig">{{ point.per_gb_median | per_gb }}</span></td>
+        {% endif %}
+        <td class="num">{{ point.min_seller_feedback }}</td>
+        <td>{% if point.capped %}<span class="ts-badge ts-badge--warn">capped</span>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+{% else %}
+<div class="ts-panel"><p class="ts-panel-note">No aggregates recorded for this query in the last {{ days }} days.</p></div>
+{% endfor %}
+
+{% if hidden_series %}
+<div class="ts-panel">
+  <h3>Other cohorts</h3>
+  <p class="ts-panel-note">Not charted above; open one on its own.</p>
+  <div class="ts-scroll">
+  <table class="ts-table">
+    <thead><tr><th>Cohort</th><th class="num">n (latest)</th><th></th></tr></thead>
+    <tbody>
+    {% for series in hidden_series %}
+      <tr>
+        <td class="mono">{{ series.cohort_key }}</td>
+        <td class="num">{{ series.latest.n }}</td>
+        <td><a href="{{ url_for('query_trend', query_id=trend.query.id) }}?days={{ days }}&metric={{ metric }}&cohort={{ series.cohort_key | urlencode }}">Open</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+{% endif %}
+
+<div class="ts-panel ts-panel--inference">
+  <h3>Disappearances — an inference, not a sales record</h3>
+  <p class="ts-panel-note">
+    How many tracked listings stopped appearing between scans. A listing leaves the
+    active pool when it is bought, when the seller ends or revises it, or when it
+    expires, and the Browse API does not say which. This is drawn as its own chart on
+    its own axis for that reason: it is not comparable with the asking series above,
+    and no price is attached to it anywhere in touchstone. Capped scans contribute
+    nothing here — their disappearances would be an artifact of a moving window.
+  </p>
+  {{ bar_chart(disappearance_plot, "Count of listings that stopped appearing, per detection") }}
+</div>
+
+<div class="ts-panel">
+  <h3>Scan history</h3>
+  <div class="ts-scroll">
+  <table class="ts-table">
+    <thead><tr>
+      <th>Started</th><th>Status</th><th class="num">Listings</th>
+      <th class="num">Excluded (low feedback)</th><th class="num">Feedback floor</th>
+      <th class="num">API calls</th><th>Notes</th>
+    </tr></thead>
+    <tbody>
+    {% for scan in trend.scans %}
+      <tr>
+        <td class="mono">{{ scan.started_at | stamp }}</td>
+        <td>{{ scan.status.value }}</td>
+        <td class="num">{{ scan.result_count }}</td>
+        <td class="num">{{ scan.excluded_low_feedback }}</td>
+        <td class="num">{{ scan.min_seller_feedback }}</td>
+        <td class="num">{{ scan.api_calls }}</td>
+        <td>
+          {% if scan.capped %}<span class="ts-badge ts-badge--warn">capped</span>{% endif %}
+          {% if scan.error %}<span class="ts-badge ts-badge--crit">{{ scan.error }}</span>{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+{% endblock %}

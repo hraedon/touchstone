@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}touchstone — {{ 'edit query' if query else 'new query' }}{% endblock %}
+{% block content %}
+{% set q = query %}
+<h1>{{ 'Edit query' if q else 'New query' }}</h1>
+<p class="ts-sub">A tracked eBay search. Each page of results costs one API call.</p>
+
+{% if problems %}
+<div class="ts-problems">
+  <ul>{% for problem in problems %}<li>{{ problem }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+<div class="ts-panel">
+<form class="ts-form" method="post"
+      action="{{ url_for('query_update', query_id=q.id) if q else url_for('query_create') }}">
+  <div class="ts-field">
+    <label for="name">Name</label>
+    <input id="name" name="name" type="text" required value="{{ q.name if q else form.get('name', '') }}">
+  </div>
+  <div class="ts-field">
+    <label for="q">Search keywords</label>
+    <input id="q" name="q" type="text" required value="{{ q.q if q else form.get('q', '') }}">
+    <span class="hint">Passed to eBay Browse as <span class="mono">q</span>.</span>
+  </div>
+  <div class="ts-field">
+    <label for="category_ids">Category ids</label>
+    <input id="category_ids" name="category_ids" type="text" value="{{ q.category_ids or '' if q else '' }}">
+    <span class="hint">Comma separated. Optional, and the cheapest way to narrow a result set below the 10,000 cap.</span>
+  </div>
+  <div class="ts-field">
+    <label for="filter_expr">Filter expression</label>
+    <input id="filter_expr" name="filter_expr" type="text" value="{{ q.filter_expr or '' if q else '' }}">
+    <span class="hint">Raw eBay Browse <span class="mono">filter</span>, passed through untouched.</span>
+  </div>
+  <div class="ts-grid-2">
+    <div class="ts-field">
+      <label for="cadence_minutes">Cadence (minutes)</label>
+      <input id="cadence_minutes" name="cadence_minutes" type="number" min="5" value="{{ q.cadence_minutes if q else 60 }}">
+    </div>
+    <div class="ts-field">
+      <label for="max_pages">Pages per scan</label>
+      <input id="max_pages" name="max_pages" type="number" min="1" max="50" value="{{ q.max_pages if q else 5 }}">
+      <span class="hint">One API call each.</span>
+    </div>
+    <div class="ts-field">
+      <label for="min_seller_feedback">Seller-feedback floor</label>
+      <input id="min_seller_feedback" name="min_seller_feedback" type="number" min="0" value="{{ q.min_seller_feedback if q else 1 }}">
+      <span class="hint">0 disables. 1 excludes zero-feedback accounts.</span>
+    </div>
+  </div>
+
+  <div class="ts-preamble" style="margin: 0">
+    <strong>Changing the seller-feedback floor breaks the series.</strong> The floor
+    decides which sellers are sampled at all, so raising or lowering it changes the
+    population being measured. The value in force is recorded on every scan and the
+    trend draws a line where it changed — an unmarked change of this kind is
+    indistinguishable from the market moving.
+  </div>
+
+  <div class="ts-field">
+    <label for="enabled">
+      <input id="enabled" name="enabled" type="checkbox" style="width:auto"
+             {% if (q and q.enabled) or not q %}checked{% endif %}> Enabled
+    </label>
+  </div>
+
+  <div class="ts-actions">
+    <button type="submit" class="strong">{{ 'Save' if q else 'Create' }}</button>
+    <a href="{{ url_for('query_list') }}">Cancel</a>
+  </div>
+</form>
+</div>
+{% endblock %}

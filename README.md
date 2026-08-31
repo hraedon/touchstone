@@ -44,7 +44,7 @@ touchstone does not paper over this. It reports three separate things:
 | | What it is |
 | --- | --- |
 | **Asking-price index** | Distribution of active asking prices per cohort per scan. A fact. Never labelled "market value". |
-| **Proxy sold series** | Listings that left the market, at their last seen price. An *inference* — a disappearance may be a sale, a seller ending the listing, or an expiry. Labelled as such, never blended into the index. |
+| **Disappearance series** | Listings that stopped appearing, at their last seen price. An *inference* — a disappearance may be a sale, a seller ending the listing, or an expiry. Named for what it is everywhere, drawn on its own axis, never blended into the index. |
 | **Deal score** | A listing below the 10th percentile of its cohort's active distribution. Conservative: the reference is biased high, so it errs toward not flagging. |
 
 `docs/measurement-model.md` is the design spine and governs the schema.
@@ -87,16 +87,60 @@ the history. What it shares with them is the family shape: a deterministic core,
 read-only stance, an optional web face that imports the core and never the reverse,
 and no work-domain identifiers in committed files.
 
+## The web face
+
+`src/touchstone/web/` is a FastAPI + Jinja2 UI over the same calls the CLI makes,
+never a privileged one. It manages queries, reads the trends, triages the deal feed,
+corrects capacity parses, and pins listings.
+
+Its constraints are the interesting part, and they are asserted by tests rather than
+left to review — a careful measurement model is undone most easily by a chart title:
+
+- No page may call an asking figure a market price, a value, or a worth. A test
+  greps the rendered HTML of every page for those phrases.
+- The disappearance series has its own panel, its own axis, and a different chart
+  type. There is no function that can put it on shared axes with an asking line.
+- Cohorts thinner than five listings are suppressed: the count is shown, the
+  statistics are struck through and withheld.
+- Both discontinuities are drawn — a change to the seller-feedback floor, and the
+  Plan 001 → 002 change in how a cohort is defined. An unmarked artifact is
+  indistinguishable from a market move.
+- Capped scans are marked on the points they produced.
+- A request never spends API budget or blocks on eBay. "Scan now" records
+  `query.scan_requested_at`; the scanner honours it on its next pass. An
+  architecture test enforces that no route module can import the eBay client.
+- Missing shipping renders as *unknown*, never as `0.00`.
+
+Its signature element is the **cohort price band** — the p10-to-median spread as a
+horizontal gauge with the flagged listing marked against it. "Below p10" is
+arithmetic; how far below, in the cohort's own spread, is the thing worth seeing, and
+it is the one view the CLI cannot give.
+
+Design tokens are vendored from [`patina`](../patina) (`./sync.sh touchstone
+<target>/static`); touchstone's accent is **cupric**, a yellow-green held clear of
+gpo-lens's verdigris and of the mint/amber status tokens.
+
+```bash
+export TOUCHSTONE_DSN=... TOUCHSTONE_SECRET_KEY=$(openssl rand -hex 32)
+uvicorn --factory touchstone.web.app:create_app --host 127.0.0.1 --port 8080
+```
+
+There is no authentication. The UI is internal-only behind `traefik-internal`;
+whether it wants a login is decided with the ingress in Plan 004, not half-built here.
+
 ## Status
 
-Plans 001 (foundation), 002 (specs, cohorts, deals), and 004a (deletion endpoint and
-production-keyset activation) are complete. The sink is deployed and subscribed; an
-eBay-signed test notification produced one acknowledged, seller-identifier-free
-receipt.
+Plans 001 (foundation), 002 (specs, cohorts, deals), 004a (deletion endpoint and
+production-keyset activation), and 003 (web UI) are complete. The sink is deployed
+and subscribed; an eBay-signed test notification produced one acknowledged,
+seller-identifier-free receipt.
 Production OAuth and Browse were exercised against live responses in memory, and the
-synthetic fixture shapes were reconciled without retaining a raw response. Plan 003
-is the web UI, followed by the remaining scanner/extractor deployment work in Plan
-004. No scheduled marketplace scan has run yet.
+synthetic fixture shapes were reconciled without retaining a raw response.
+
+The first real scans have now run against the live keyset: 596 listings observed,
+488 of 500 distinct titles specced by the regex path, 111 cohorts, one disappearance
+and five flagged listings — all rendered and checked in the UI. What remains is Plan
+004: the scanner and extractor CronJobs, the internal UI ingress, and retention.
 
 ## Development
 

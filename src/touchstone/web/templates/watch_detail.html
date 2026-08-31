@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% from "_chart.html" import line_chart %}
+{% block title %}touchstone — pinned listing{% endblock %}
+{% block content %}
+<h1 class="ts-title">{{ view.listing.title if view.listing else view.watch.listing_id }}</h1>
+<p class="ts-sub mono">{{ view.watch.listing_id }}{% if view.listing and view.listing.condition %} · {{ view.listing.condition }}{% endif %}</p>
+
+<div class="ts-panel">
+  <div class="ts-actions" style="justify-content: space-between">
+    <div>
+      {% if view.watch.note %}<span class="muted">{{ view.watch.note }}</span>{% endif %}
+    </div>
+    <div class="ts-actions">
+      {% if view.listing and view.listing.item_web_url %}
+        <a href="{{ view.listing.item_web_url }}" rel="noopener noreferrer nofollow" target="_blank">View on eBay</a>
+      {% endif %}
+      <form class="inline" method="post" action="{{ url_for('watch_remove', listing_id=view.watch.listing_id) }}">
+        <button type="submit" class="subtle">Unpin</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+<div class="ts-panel">
+  <h3>Asking price over time</h3>
+  <p class="ts-panel-note">
+    One listing's own asking history — an observation, not a statistic, and not
+    suppressed, because it describes exactly one thing and says so. The delivered
+    line breaks wherever eBay reported no shipping cost: that is unknown, never zero,
+    and treating it as free would understate the total and every $/GB derived from it.
+  </p>
+  {{ line_chart(plot, "Asking price and delivered total over time for this listing") }}
+  <div class="ts-legend">
+    <span><i class="swatch swatch--median"></i>asking price</span>
+    <span><i class="swatch swatch--p10"></i>delivered total (breaks where shipping is unknown)</span>
+  </div>
+</div>
+
+{% if view.spec %}
+<div class="ts-panel">
+  <h3>Capacity parse</h3>
+  <p class="ts-panel-note">
+    {{ view.spec.total_gb if view.spec.total_gb is not none else '?' }} GB total, read by
+    <span class="mono">{{ view.spec.method_label }}</span>
+    {% if view.spec.confidence is not none %}at confidence {{ view.spec.confidence | money(2) }}{% endif %}.
+    <a href="{{ url_for('spec_edit', title_hash=view.spec.title_hash) }}">Correct this</a>.
+  </p>
+</div>
+{% endif %}
+
+<div class="ts-panel">
+  <h3>Observations</h3>
+  <div class="ts-scroll">
+  <table class="ts-table">
+    <thead><tr><th>Observed</th><th class="num">Asking</th><th class="num">Shipping</th><th class="num">Delivered</th><th>Currency</th></tr></thead>
+    <tbody>
+    {% for point in view.observations | reverse %}
+      <tr>
+        <td class="mono">{{ point.observed_at | stamp }}</td>
+        <td class="num"><span class="ts-fig">{{ point.price | money }}</span></td>
+        <td class="num">
+          {% if point.shipping_known %}<span class="ts-fig">{{ point.shipping_cost | money }}</span>
+          {% else %}<span class="ts-unknown" title="eBay reported no shipping cost. Unknown, not free.">unknown</span>{% endif %}
+        </td>
+        <td class="num">
+          {% if point.total_cost is none %}<span class="ts-unknown">unknown</span>
+          {% else %}<span class="ts-fig">{{ point.total_cost | money }}</span>{% endif %}
+        </td>
+        <td>{{ point.currency }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+{% endblock %}

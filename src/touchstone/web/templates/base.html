@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}touchstone{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='css/tokens.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', path='css/touchstone.css') }}">
+  <script src="{{ url_for('static', path='theme.js') }}"></script>
+</head>
+<body>
+<a class="ts-skip-link" href="#main">Skip to main content</a>
+{% set path = request.scope.get('path', '/') %}
+<header class="ts-topbar">
+  <div class="ts-topbar-inner">
+    <a class="ts-wordmark" href="{{ url_for('dashboard') }}" aria-label="touchstone home">
+      <span class="ts-mark" aria-hidden="true">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 19.5 L8.5 3.5 L19.5 6 L15 21.5 Z"/>
+          <path d="M8 15.5 L13.5 9.5"/>
+          <path d="M10.5 17 L16 11"/>
+        </svg>
+      </span>
+      <span>touch<span class="muted">·</span>stone</span>
+    </a>
+    <nav class="ts-nav" aria-label="Primary">
+      <a href="{{ url_for('dashboard') }}" {% if path == '/' %}class="active" aria-current="page"{% endif %}>Overview</a>
+      <a href="{{ url_for('query_list') }}" {% if path.startswith('/queries') %}class="active"{% endif %}>Queries</a>
+      <a href="{{ url_for('deal_feed') }}" {% if path.startswith('/deals') %}class="active"{% endif %}>Deals</a>
+      <a href="{{ url_for('spec_worklist') }}" {% if path.startswith('/specs') %}class="active"{% endif %}>Specs</a>
+      <a href="{{ url_for('watch_list') }}" {% if path.startswith('/watch') %}class="active"{% endif %}>Watchlist</a>
+    </nav>
+    <span class="ts-spacer"></span>
+    <button class="ts-iconbtn" id="theme-toggle" type="button" title="Toggle light / dark"
+            aria-label="Toggle light or dark theme">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="4.2"/>
+        <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<main class="ts-app" id="main">
+  {% for entry in flashes %}
+    <div class="ts-flash ts-flash--{{ entry.level }}">{{ entry.message }}</div>
+  {% endfor %}
+  {% block content %}{% endblock %}
+</main>
+
+<footer class="ts-footer ts-app">
+  touchstone reports what sellers are <strong>asking</strong> for active listings, and
+  how many listings stopped appearing. eBay exposes no completed-sale data to this
+  application — Marketplace Insights is a gated Limited Release and
+  <span class="mono">findCompletedItems</span> was retired — so nothing here is, or
+  can be, a record of what anything actually changed hands for. Active asking prices
+  skew high: inventory priced correctly leaves the pool, inventory priced badly stays
+  in it.
+</footer>
+</body>
+</html>

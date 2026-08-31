@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}touchstone — overview{% endblock %}
+{% block content %}
+<h1>Overview</h1>
+<p class="ts-sub">What is being sampled, what it has cost, and what needs a person.</p>
+
+<div class="ts-preamble">
+  <strong>Read every figure here as an asking price.</strong> touchstone samples
+  <em>active</em> listings, which is all the Browse API exposes. That pool skews high:
+  stock priced correctly sells and leaves it; stock priced badly stays. A separate,
+  clearly-marked disappearance count records listings that stopped appearing — which
+  may mean a sale, a seller ending the listing, or an expiry, and touchstone cannot
+  tell those apart.
+</div>
+
+<div class="ts-panel">
+  <h2>Today</h2>
+  <div class="ts-stat-row">
+    <div class="ts-stat">
+      <div class="ts-fig-label">Open deals</div>
+      <div class="value">{{ overview.open_deals }}</div>
+    </div>
+    <div class="ts-stat">
+      <div class="ts-fig-label">Titles without capacity</div>
+      <div class="value">{{ overview.unspecced_titles }}</div>
+    </div>
+    <div class="ts-stat">
+      <div class="ts-fig-label">Pinned listings</div>
+      <div class="value">{{ overview.watched }}</div>
+    </div>
+    <div class="ts-stat">
+      <div class="ts-fig-label">API calls used today</div>
+      <div class="value">{{ overview.budget.calls_used }}<span class="muted" style="font-size: var(--fs-sm)">/{{ overview.budget.calls_limit }}</span></div>
+    </div>
+  </div>
+  <p class="ts-panel-note" style="margin-top: var(--space-3)">
+    The budget above is the <strong>local ledger</strong>, last reconciled with eBay
+    {{ overview.budget.last_authoritative_read | since }}{% if overview.budget.last_authoritative_remaining is not none %}
+    (eBay then reported {{ overview.budget.last_authoritative_remaining }} remaining){% endif %}.
+    This page never calls eBay to refresh it: a page view must not spend from a
+    5,000-a-day allowance, so you get a figure with its staleness attached rather
+    than a fresh-looking guess. {{ overview.budget.usable }} calls usable after the
+    {{ overview.budget.reserve }}-call reserve.
+  </p>
+</div>
+
+<div class="ts-panel">
+  <h2>Tracked queries</h2>
+  {% if not overview.queries %}
+    <p class="ts-panel-note">None yet. <a href="{{ url_for('query_new') }}">Define one</a>.</p>
+  {% else %}
+  <div class="ts-scroll">
+  <table class="ts-table">
+    <thead><tr>
+      <th>Query</th><th>State</th><th>Cadence</th><th class="num">Projected calls/day</th>
+      <th class="num">Scans</th><th>Last scan</th><th></th>
+    </tr></thead>
+    <tbody>
+    {% for row in overview.queries %}
+      <tr>
+        <td><a href="{{ url_for('query_trend', query_id=row.query.id) }}">{{ row.query.name }}</a>
+            <div class="muted mono" style="font-size: var(--fs-xs)">{{ row.query.q }}</div></td>
+        <td>{% if row.query.enabled %}<span class="ts-badge ts-badge--ok">enabled</span>{% else %}<span class="ts-badge">disabled</span>{% endif %}</td>
+        <td class="mono">{{ row.query.cadence_minutes }}m</td>
+        <td class="num">{{ row.projected_daily_calls }}</td>
+        <td class="num">{{ row.scan_count }}</td>
+        <td>{{ row.query.last_scanned_at | since }}
+          {% if row.last_scan and row.last_scan.capped %}<span class="ts-badge ts-badge--warn">capped</span>{% endif %}</td>
+        <td><a href="{{ url_for('query_trend', query_id=row.query.id) }}">Trend</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+</div>
+
+<div class="ts-panel">
+  <h2>Recent scans</h2>
+  {% if not overview.recent_scans %}
+    <p class="ts-panel-note">No scans recorded yet.</p>
+  {% else %}
+  <div class="ts-scroll">
+  <table class="ts-table">
+    <thead><tr>
+      <th>Started</th><th>Status</th><th class="num">Listings</th>
+      <th class="num">Excluded (low feedback)</th><th class="num">Feedback floor</th>
+      <th class="num">API calls</th><th>Notes</th>
+    </tr></thead>
+    <tbody>
+    {% for scan in overview.recent_scans %}
+      <tr>
+        <td class="mono">{{ scan.started_at | stamp }}</td>
+        <td>{{ scan.status.value }}</td>
+        <td class="num">{{ scan.result_count }}</td>
+        <td class="num">{{ scan.excluded_low_feedback }}</td>
+        <td class="num">{{ scan.min_seller_feedback }}</td>
+        <td class="num">{{ scan.api_calls }}</td>
+        <td>
+          {% if scan.capped %}<span class="ts-badge ts-badge--warn" title="eBay caps a result set at 10,000; this scan sampled a moving window and its disappearances were not recorded">capped</span>{% endif %}
+          {% if scan.error %}<span class="ts-badge ts-badge--crit">{{ scan.error }}</span>{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

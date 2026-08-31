@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}touchstone — queries{% endblock %}
+{% block content %}
+<h1>Tracked searches</h1>
+<p class="ts-sub">Each page of results is one API call against a shared daily allowance.</p>
+
+<div class="ts-panel">
+  <div class="ts-actions" style="justify-content: space-between">
+    <div>
+      <span class="ts-fig-label">Budget today (local ledger)</span>
+      <span class="ts-fig">{{ budget.calls_used }}/{{ budget.calls_limit }}</span>
+      <span class="muted">— {{ budget.usable }} usable after reserve; last reconciled with eBay {{ budget.last_authoritative_read | since }}</span>
+    </div>
+    <a href="{{ url_for('query_new') }}"><button type="button" class="strong">New query</button></a>
+  </div>
+</div>
+
+<div class="ts-panel">
+  {% if not rows %}
+    <p class="ts-panel-note">No queries yet.</p>
+  {% else %}
+  <div class="ts-scroll">
+  <table class="ts-table">
+    <thead><tr>
+      <th>Name</th><th>Keywords</th><th>State</th><th class="num">Cadence</th>
+      <th class="num">Pages</th><th class="num">Feedback floor</th>
+      <th class="num">Projected calls/day</th><th>Last scan</th><th>Actions</th>
+    </tr></thead>
+    <tbody>
+    {% for row in rows %}
+      <tr>
+        <td><a href="{{ url_for('query_trend', query_id=row.query.id) }}">{{ row.query.name }}</a></td>
+        <td class="mono ts-title">{{ row.query.q }}</td>
+        <td>{% if row.query.enabled %}<span class="ts-badge ts-badge--ok">enabled</span>{% else %}<span class="ts-badge">disabled</span>{% endif %}
+          {% if row.query.scan_requested_at %}<span class="ts-badge ts-badge--accent">scan requested</span>{% endif %}</td>
+        <td class="num">{{ row.query.cadence_minutes }}m</td>
+        <td class="num">{{ row.query.max_pages }}</td>
+        <td class="num">{{ row.query.min_seller_feedback }}</td>
+        <td class="num">{{ row.projected_daily_calls }}</td>
+        <td>{{ row.query.last_scanned_at | since }}</td>
+        <td>
+          <div class="ts-actions">
+            <a href="{{ url_for('query_edit', query_id=row.query.id) }}">Edit</a>
+            <form class="inline" method="post" action="{{ url_for('query_toggle', query_id=row.query.id) }}">
+              <button type="submit" class="subtle">{{ 'Disable' if row.query.enabled else 'Enable' }}</button>
+            </form>
+            {% if row.query.scan_requested_at %}
+            <form class="inline" method="post" action="{{ url_for('query_scan_request_cancel', query_id=row.query.id) }}">
+              <button type="submit" class="subtle">Cancel request</button>
+            </form>
+            {% else %}
+            <form class="inline" method="post" action="{{ url_for('query_scan_request', query_id=row.query.id) }}">
+              <button type="submit" class="subtle" title="Records a request. The scanner runs it on its next pass; nothing is called from this page.">Scan now</button>
+            </form>
+            {% endif %}
+          </div>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+  <p class="ts-panel-note" style="margin-top: var(--space-3)">
+    <strong>Projected calls/day</strong> is the worst case — cadence times pages, as
+    if every scan paged to the limit. It is shown before a query is saved so an
+    expensive one is obvious in advance rather than after it has spent the allowance.
+    <strong>Scan now</strong> only records the request; the scanner honours it on its
+    next pass, because a page load must never spend quota or wait on eBay.
+  </p>
+</div>
+{% endblock %}

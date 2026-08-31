@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}touchstone — watchlist{% endblock %}
+{% block content %}
+<h1>Watchlist</h1>
+<p class="ts-sub">Pinned listings, tracked whatever the sampling does.</p>
+
+<div class="ts-panel">
+  <form class="ts-form" method="post" action="{{ url_for('watch_add') }}">
+    <div class="ts-grid-2">
+      <div class="ts-field">
+        <label for="listing_id">eBay item id</label>
+        <input id="listing_id" name="listing_id" type="text" placeholder="v1|123456789012|0" required>
+        <span class="hint">Must already have been observed by a scan.</span>
+      </div>
+      <div class="ts-field">
+        <label for="note">Note</label>
+        <input id="note" name="note" type="text">
+      </div>
+    </div>
+    <div class="ts-actions"><button type="submit" class="strong">Pin</button></div>
+  </form>
+</div>
+
+<div class="ts-panel">
+  {% if not watches %}
+    <p class="ts-panel-note">Nothing pinned.</p>
+  {% else %}
+  <div class="ts-scroll">
+  <table class="ts-table">
+    <thead><tr>
+      <th>Listing</th><th class="num">Observations</th><th class="num">Latest asking</th>
+      <th class="num">Latest delivered</th><th>First seen</th><th></th>
+    </tr></thead>
+    <tbody>
+    {% for view in watches %}
+      <tr>
+        <td class="mono ts-title">
+          <a href="{{ url_for('watch_detail', listing_id=view.watch.listing_id) }}">
+            {{ view.listing.title if view.listing else view.watch.listing_id }}</a>
+          {% if view.watch.note %}<div class="muted" style="font-size: var(--fs-xs)">{{ view.watch.note }}</div>{% endif %}
+        </td>
+        <td class="num">{{ view.observations | length }}</td>
+        <td class="num">{{ (view.latest.price if view.latest else none) | money }}</td>
+        <td class="num">
+          {% if view.latest and view.latest.total_cost is none %}
+            <span class="ts-unknown" title="eBay reported no shipping cost for this listing. Unknown, not free.">unknown</span>
+          {% else %}
+            {{ (view.latest.total_cost if view.latest else none) | money }}
+          {% endif %}
+        </td>
+        <td>{{ view.first_seen | since }}</td>
+        <td>
+          <form class="inline" method="post" action="{{ url_for('watch_remove', listing_id=view.watch.listing_id) }}">
+            <button type="submit" class="subtle">Unpin</button>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

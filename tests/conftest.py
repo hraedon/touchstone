@@ -21,12 +21,15 @@ import socket
 import subprocess
 import time
 from collections.abc import Iterator
+from dataclasses import dataclass
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import Engine, create_engine, text
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from touchstone.db.models import Base
+from touchstone.web.app import WebSettings, create_app
 
 POSTGRES_IMAGE = "postgres:16"
 CONTAINER_NAME = "touchstone-test-pg"
@@ -114,5 +117,48 @@ def session(engine: Engine) -> Iterator[Session]:
         yield sess
     finally:
         sess.close()
+        transaction.rollback()
+        connection.close()
+
+
+@dataclass
+class WebHarness:
+    """A running app plus a session on the *same* transaction.
+
+    Both share one connection inside an outer transaction that is rolled back, so a
+    test can seed data with ``harness.session``, have the app read it back through
+    its own sessions, and leave nothing behind. ``join_transaction_mode`` is what
+    makes that work: a ``commit()`` inside a request handler releases a savepoint
+    rather than committing the outer transaction.
+    """
+
+    client: TestClient
+    session: Session
+
+
+@pytest.fixture
+def harness(engine: Engine) -> Iterator[WebHarness]:
+    connection = engine.connect()
+    transaction = connection.begin()
+    factory = sessionmaker(
+        bind=connection,
+        expire_on_commit=False,
+        future=True,
+        join_transaction_mode="create_savepoint",
+    )
+    app = create_app(
+        settings=WebSettings(
+            dsn="postgresql+psycopg://unused/unused",
+            secret_key="test-only-secret-key-at-least-32-chars",
+            session_cookie_secure=False,
+        ),
+        session_factory=factory,
+    )
+    seeding = factory()
+    try:
+        with TestClient(app) as client:
+            yield WebHarness(client=client, session=seeding)
+    finally:
+        seeding.close()
         transaction.rollback()
         connection.close()

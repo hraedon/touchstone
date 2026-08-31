@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}touchstone — specs{% endblock %}
+{% block content %}
+<h1>Capacity corrections</h1>
+<p class="ts-sub">Titles whose capacity is unknown or weakly read, most-shared first.</p>
+
+<div class="ts-preamble">
+  <strong>Capacity is the field everything else divides by.</strong> A title read as
+  one 32 GB module when it is a lot of four is a fourfold error in $/GB — it invents
+  a spectacular bargain and drags down the cohort reference every other listing is
+  scored against. Correcting the most-shared titles first is deliberate: one
+  correction to a template used by two hundred listings moves two hundred listings.
+  A correction is authoritative — it is never re-extracted, and it lifts the
+  confidence gate on deal scoring for that title.
+</div>
+
+<div class="ts-panel">
+  {% if not rows %}
+    <p class="ts-panel-note">Nothing needs attention: every observed title has a capacity read at or above the confidence floor.</p>
+  {% else %}
+  <div class="ts-scroll">
+  <table class="ts-table">
+    <thead><tr>
+      <th>Title</th><th class="num">Listings</th><th>Reason</th>
+      <th>Method</th><th class="num">Confidence</th><th class="num">Total GB</th><th></th>
+    </tr></thead>
+    <tbody>
+    {% for row in rows %}
+      <tr>
+        <td class="mono ts-title">{{ row.title }}</td>
+        <td class="num">{{ row.listing_count }}</td>
+        <td><span class="ts-badge ts-badge--warn">{{ row.reason }}</span></td>
+        <td>{{ row.spec.method_label if row.spec else 'not extracted' }}</td>
+        <td class="num">{{ (row.spec.confidence if row.spec else none) | money(2) }}</td>
+        <td class="num">{{ row.spec.total_gb if row.spec and row.spec.total_gb is not none else '—' }}</td>
+        <td><a href="{{ url_for('spec_edit', title_hash=row.title_hash) }}">Correct</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

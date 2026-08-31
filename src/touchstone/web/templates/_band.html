@@ -1,0 +1,31 @@
+{# The signature element: where one listing sits against the cohort it was scored
+   against. "Below p10" is arithmetic — in any cohort of two or more, something is.
+   The gauge shows how far below, in the cohort's own spread. #}
+{% macro price_band(band) %}
+<div class="ts-band{% if band.suppressed %} ts-band--suppressed{% endif %}">
+  <div class="ts-band-track" role="img"
+       aria-label="Flagged at {{ band.marked | per_gb }} {{ band.unit }}; cohort p10 {{ band.p10 | per_gb }}, median {{ band.median | per_gb }}, n={{ band.n }}">
+    <div class="ts-band-span" style="left: {{ band.band_left }}%; width: {{ band.band_width }}%"></div>
+    <div class="ts-band-tick" style="left: {{ band.p10_pos }}%" title="p10 asking"></div>
+    {% if not band.degenerate %}<div class="ts-band-tick" style="left: {{ band.median_pos }}%" title="median asking"></div>{% endif %}
+    <div class="ts-band-marker" style="left: {{ band.marked_pos }}%"></div>
+  </div>
+  <div class="ts-band-scale">
+    <span>this listing {{ band.marked | per_gb }}</span>
+    {% if band.degenerate %}
+      <span>p10 and median both {{ band.p10 | per_gb }} asking (n={{ band.n }}) — no spread</span>
+    {% else %}
+      <span>p10 {{ band.p10 | per_gb }} — median {{ band.median | per_gb }} asking (n={{ band.n }})</span>
+    {% endif %}
+  </div>
+  {% if band.degenerate %}
+  <p class="ts-panel-note" style="margin-top: var(--space-1)">
+    This cohort has no spread: its tenth percentile and its median are the same
+    figure, which happens when most of the cohort sits at one price. The score above
+    is therefore measured against a fallback of 5% of the price level rather than
+    against a real spread, and is weaker evidence than the same score in a cohort
+    that has one.
+  </p>
+  {% endif %}
+</div>
+{% endmacro %}

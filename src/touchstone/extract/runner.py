@@ -150,19 +150,31 @@ def correct_spec(
     title_hash: str,
     candidate: SpecCandidate,
     corrected_by: str,
+    title: str | None = None,
 ) -> ItemSpec:
     """Record a human correction, which supersedes any model reading permanently.
 
     A correction is authoritative: it is never re-extracted, and it lifts the
     confidence gate on deal scoring for listings sharing this title, because a
     person has already looked at it.
+
+    A title with no spec row at all is the *most* worth correcting — it is sitting
+    in the unspecced bucket contributing to nothing — so passing ``title`` creates
+    the row. Without it, correcting a title that was never extracted raises, which
+    keeps a caller from inventing a spec for a title hash it cannot name.
     """
     if not plausible(candidate):
         raise ValueError("corrected spec fails the range check")
 
     spec = session.get(ItemSpec, title_hash)
     if spec is None:
-        raise ValueError(f"no spec to correct for {title_hash}")
+        if title is None:
+            raise ValueError(f"no spec to correct for {title_hash}")
+        spec = ItemSpec(
+            title_hash=title_hash,
+            normalized_title=normalize_title(title),
+        )
+        session.add(spec)
 
     spec.capacity_per_module_gb = candidate.capacity_per_module_gb
     spec.module_count = candidate.module_count

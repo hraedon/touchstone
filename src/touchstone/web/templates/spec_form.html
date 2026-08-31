@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}touchstone — correct spec{% endblock %}
+{% block content %}
+<h1>Correct a capacity parse</h1>
+<p class="ts-sub mono ts-title">{{ title }}</p>
+<p class="ts-sub">{{ listing_count }} listing(s) share this title and will all be re-cohorted.</p>
+
+{% if problems %}
+<div class="ts-problems"><ul>{% for problem in problems %}<li>{{ problem }}</li>{% endfor %}</ul></div>
+{% endif %}
+
+<div class="ts-panel">
+<form class="ts-form" method="post" action="{{ url_for('spec_correct', title_hash=title_hash) }}">
+  <div class="ts-grid-2">
+    <div class="ts-field">
+      <label for="capacity_per_module_gb">GB per module</label>
+      <input id="capacity_per_module_gb" name="capacity_per_module_gb" type="number" min="1"
+             value="{{ spec.capacity_per_module_gb if spec and spec.capacity_per_module_gb is not none else '' }}">
+    </div>
+    <div class="ts-field">
+      <label for="module_count">Modules</label>
+      <input id="module_count" name="module_count" type="number" min="1"
+             value="{{ spec.module_count if spec and spec.module_count is not none else '' }}">
+    </div>
+    <div class="ts-field">
+      <label for="total_gb">Total GB</label>
+      <input id="total_gb" name="total_gb" type="number" min="1"
+             value="{{ spec.total_gb if spec and spec.total_gb is not none else '' }}">
+      <span class="hint">Must equal per-module x modules if both are given.</span>
+    </div>
+    <div class="ts-field">
+      <label for="ddr_gen">Generation</label>
+      <input id="ddr_gen" name="ddr_gen" type="text" value="{{ spec.ddr_gen or '' if spec else '' }}">
+    </div>
+    <div class="ts-field">
+      <label for="speed_mt">Speed (MT/s)</label>
+      <input id="speed_mt" name="speed_mt" type="number" value="{{ spec.speed_mt if spec and spec.speed_mt is not none else '' }}">
+    </div>
+    <div class="ts-field">
+      <label for="form_factor">Form factor</label>
+      <input id="form_factor" name="form_factor" type="text" value="{{ spec.form_factor or '' if spec else '' }}">
+    </div>
+    <div class="ts-field">
+      <label for="rank_org">Rank organisation</label>
+      <input id="rank_org" name="rank_org" type="text" value="{{ spec.rank_org or '' if spec else '' }}">
+    </div>
+    <div class="ts-field">
+      <label for="ecc">ECC</label>
+      <select id="ecc" name="ecc">
+        <option value="" {% if not spec or spec.ecc is none %}selected{% endif %}>unknown</option>
+        <option value="yes" {% if spec and spec.ecc is sameas true %}selected{% endif %}>yes</option>
+        <option value="no" {% if spec and spec.ecc is sameas false %}selected{% endif %}>no</option>
+      </select>
+    </div>
+    <div class="ts-field">
+      <label for="registered">Registered</label>
+      <select id="registered" name="registered">
+        <option value="" {% if not spec or spec.registered is none %}selected{% endif %}>unknown</option>
+        <option value="yes" {% if spec and spec.registered is sameas true %}selected{% endif %}>yes</option>
+        <option value="no" {% if spec and spec.registered is sameas false %}selected{% endif %}>no</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="ts-field">
+    <label for="corrected_by">Corrected by</label>
+    <input id="corrected_by" name="corrected_by" type="text" required
+           value="{{ spec.corrected_by or '' if spec else '' }}">
+    <span class="hint">Recorded on the spec. A correction is permanent and supersedes the model.</span>
+  </div>
+
+  <div class="ts-preamble" style="margin: 0">
+    Leave a field <strong>unknown</strong> rather than guessing. An attribute you
+    cannot see in the title is better absent than asserted: a wrong one puts the
+    listing in the wrong cohort, where it corrupts the reference for everything else
+    in it.
+  </div>
+
+  <div class="ts-actions">
+    <button type="submit" class="strong">Save correction</button>
+    <a href="{{ url_for('spec_worklist') }}">Cancel</a>
+  </div>
+</form>
+</div>
+{% endblock %}

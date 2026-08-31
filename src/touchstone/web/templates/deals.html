@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% from "_band.html" import price_band %}
+{% block title %}touchstone — deals{% endblock %}
+{% block content %}
+<h1>Deal feed</h1>
+<p class="ts-sub">Listings priced anomalously low against their own cohort's asking distribution.</p>
+
+<div class="ts-preamble">
+  <strong>A flag here means "cheap relative to what similar listings are asking",
+  not "below market".</strong> The reference distribution is built from active
+  asking prices, which skew high, so this is a weaker and more conservative claim
+  than it may look. Being the cheapest in a cohort is arithmetic, not a signal — in
+  any cohort of two or more, something is below p10 — so a listing must also sit at
+  least {{ MIN_SCORE }} spread-unit below the tenth percentile, in a cohort of at
+  least {{ MIN_COHORT_N }}, with a capacity parse that has been trusted or corrected.
+</div>
+
+<div class="ts-panel">
+  <div class="ts-actions">
+    {% if include_dismissed %}
+      <a href="{{ url_for('deal_feed') }}">Show open only</a>
+    {% else %}
+      <a href="{{ url_for('deal_feed') }}?dismissed=1">Include dismissed</a>
+    {% endif %}
+  </div>
+</div>
+
+{% for entry in deals %}
+{% set view = entry.view %}
+<div class="ts-panel">
+  <div class="ts-actions" style="justify-content: space-between; align-items: flex-start">
+    <div class="ts-title">
+      <div class="mono">{{ view.listing.title if view.listing else view.deal.listing_id }}</div>
+      <div class="muted mono" style="font-size: var(--fs-xs)">
+        {{ view.deal.cohort_key }}
+        {% if view.listing and view.listing.condition %} · {{ view.listing.condition }}{% endif %}
+      </div>
+    </div>
+    <div class="ts-actions">
+      {% if view.listing and view.listing.item_web_url %}
+        <a href="{{ view.listing.item_web_url }}" rel="noopener noreferrer nofollow" target="_blank">View on eBay</a>
+      {% endif %}
+      <form class="inline" method="post" action="{{ url_for('watch_add') }}">
+        <input type="hidden" name="listing_id" value="{{ view.deal.listing_id }}">
+        <button type="submit" class="subtle">Pin</button>
+      </form>
+      {% if view.dismissed %}
+        <form class="inline" method="post" action="{{ url_for('deal_restore', deal_id=view.deal.id) }}">
+          <button type="submit" class="subtle">Restore</button>
+        </form>
+      {% else %}
+        <form class="inline" method="post" action="{{ url_for('deal_dismiss', deal_id=view.deal.id) }}">
+          <button type="submit" class="subtle">Dismiss</button>
+        </form>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="ts-stat-row" style="margin-top: var(--space-3)">
+    <div class="ts-stat">
+      <div class="ts-fig-label">Asking (delivered)</div>
+      <div class="value">{{ view.deal.total_cost | float | money }}</div>
+    </div>
+    <div class="ts-stat">
+      <div class="ts-fig-label">Asking $/GB</div>
+      <div class="value">{{ view.per_gb | per_gb }}</div>
+    </div>
+    <div class="ts-stat">
+      <div class="ts-fig-label">Cohort p10 asking $/GB</div>
+      <div class="value">{{ view.cohort_p10 | per_gb }}</div>
+    </div>
+    <div class="ts-stat">
+      <div class="ts-fig-label">Cohort n</div>
+      <div class="value">{{ view.deal.cohort_n }}</div>
+    </div>
+    <div class="ts-stat">
+      <div class="ts-fig-label">Score (spread-units below p10)</div>
+      <div class="value">{{ view.deal.score | float | money }}</div>
+    </div>
+  </div>
+
+  {% if entry.band %}
+    {{ price_band(entry.band) }}
+  {% else %}
+    <p class="ts-panel-note">
+      No band drawn: the cohort statistics recorded alongside this flag do not
+      include a median, so there is no spread to place it in.
+    </p>
+  {% endif %}
+
+  <div class="ts-panel-note" style="margin-top: var(--space-3)">
+    <strong>Capacity parse.</strong>
+    {% if view.spec %}
+      {{ view.spec.total_gb if view.spec.total_gb is not none else '?' }} GB total
+      {% if view.spec.capacity_per_module_gb and view.spec.module_count %}
+        ({{ view.spec.module_count }} x {{ view.spec.capacity_per_module_gb }} GB){% endif %},
+      read by <span class="mono">{{ view.spec.method_label }}</span>
+      {% if view.spec.confidence is not none %}at confidence {{ view.spec.confidence | money(2) }}{% endif %}
+      {% if view.spec.corrected_by %}(corrected by {{ view.spec.corrected_by }}){% endif %}.
+      {% if not view.spec.trusted %}
+        <span class="ts-badge ts-badge--warn">low confidence</span>
+      {% endif %}
+      <a href="{{ url_for('spec_edit', title_hash=view.spec.title_hash) }}">Correct this</a>.
+      Every figure above divides by that capacity: reading a lot of four modules as
+      one manufactures a fourfold bargain that is not there, and drags the cohort
+      reference with it.
+    {% else %}
+      No spec recorded for this title.
+    {% endif %}
+  </div>
+</div>
+{% else %}
+<div class="ts-panel"><p class="ts-panel-note">Nothing flagged.</p></div>
+{% endfor %}
+{% endblock %}

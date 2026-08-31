@@ -1,5 +1,29 @@
 # Plan 003 — Web UI
 
+> **Completed 2026-08-31.** All seven work items landed. The honesty constraints are
+> tests, not review notes: a forbidden-label grep over the rendered HTML of every
+> page, suppression checked at the n=4/n=5 boundary, both discontinuities asserted
+> present *and* asserted absent when nothing changed, capped points marked, and the
+> aggregate rule checked from the outside by deleting every listing row and
+> confirming the chart does not move. Each of those was mutation-checked — the guard
+> was shown to fail against a deliberately broken implementation before it was kept.
+>
+> Exit criterion met live: two real scans ran against the production keyset (596
+> listings, 111 cohorts, 1 disappearance, 5 flagged), `touchstone extract` specced
+> 488 of 500 distinct titles by regex, and every page was rendered and checked
+> against that data.
+>
+> **Two things the plan did not anticipate**, both found on live data:
+> - `correct_spec()` refused to correct a title with no spec row — which is exactly
+>   the case the worklist surfaces most. It now creates the row when given the title.
+> - Most real cohorts have **no spread**: p10 and the median coincide, because forty
+>   listings of the same module often sit at one price. The price band rendered as a
+>   zero-width hairline that said nothing. It now says so explicitly, and notes that
+>   the score fell back to a fraction of the price level.
+>
+> Deferred deliberately: auth (Plan 004, with the ingress) and the UI Deployment
+> itself (also Plan 004). The image already carries the templates and static assets.
+
 **Goal:** manage tracked queries, read the trends, triage the deal feed, and correct
 bad specs — without any of it lying about what the numbers are.
 
