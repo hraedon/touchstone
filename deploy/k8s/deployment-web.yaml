@@ -27,7 +27,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: web
-          image: ghcr.io/hraedon/touchstone@sha256:dfbe04040da7fd816a5bd467f4521acc2f7d24e4dbfb842af323212eeef15b84
+          image: ghcr.io/hraedon/touchstone@sha256:e209860b26472b797f06887c8ef754c29ad19c0122f5a55681af542ad4f3b4d2
           imagePullPolicy: IfNotPresent
           # --factory, because SessionMiddleware needs the signing key when the app
           # object is constructed. That cannot be deferred into a lifespan hook the

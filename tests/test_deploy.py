@@ -18,7 +18,7 @@ K8S = ROOT / "deploy" / "k8s"
 
 RELEASE_IMAGE = (
     "ghcr.io/hraedon/touchstone@"
-    "sha256:dfbe04040da7fd816a5bd467f4521acc2f7d24e4dbfb842af323212eeef15b84"
+    "sha256:e209860b26472b797f06887c8ef754c29ad19c0122f5a55681af542ad4f3b4d2"
 )
 
 # Every value lives in exactly one Secret, and every workload gets only what it uses.
