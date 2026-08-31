@@ -1,0 +1,30 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: touchstone-web-int
+  namespace: touchstone
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod-porkbun
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+spec:
+  # Internal only. Unlike the sink there is no path scoping: the whole app is the
+  # point, and it is reachable only from the LAN. There is no authentication, which
+  # is a decision recorded in plans/004-schedule-and-serve.md — the worst a visitor
+  # can do is spend an API allowance that affects nothing outside touchstone. The
+  # cluster runs authentik if that ever stops being true.
+  ingressClassName: traefik-internal
+  tls:
+    - hosts:
+        - touchstone.k8s.hraedon.com
+      secretName: touchstone-k8s-hraedon-com-tls
+  rules:
+    - host: touchstone.k8s.hraedon.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: touchstone-web
+                port:
+                  name: http

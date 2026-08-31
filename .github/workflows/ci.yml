@@ -147,6 +147,42 @@ jobs:
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
             http://127.0.0.1:18080/docs)" = '404'
 
+      - name: Web UI starts under the same production container constraints
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The UI ships in this image and is deployed from it. Nothing else proves
+          # it can start non-root on a read-only rootfs with no capabilities — and
+          # a UI that only starts as root is a defect you discover in the cluster.
+          docker run --detach --name touchstone-web-smoke \
+            --read-only --user 65532:65532 --cap-drop=ALL \
+            --security-opt=no-new-privileges \
+            --publish 127.0.0.1:18081:8080 \
+            --env TOUCHSTONE_DSN=postgresql+psycopg://unused:unused@db.invalid/touchstone \
+            --env TOUCHSTONE_SECRET_KEY=ci-placeholder-secret-key-32-chars-long \
+            touchstone-ci:smoke \
+            uvicorn --factory touchstone.web.app:create_app \
+              --host 0.0.0.0 --port 8080 --no-access-log
+          trap 'docker rm --force touchstone-web-smoke >/dev/null 2>&1' EXIT
+
+          live=''
+          for _ in {1..30}; do
+            live=$(curl --fail --silent --show-error http://127.0.0.1:18081/livez) && break
+            sleep 1
+          done
+          test "$live" = '{"status":"ok"}'
+
+          # The static assets are package data. If hatchling ever stops shipping
+          # templates/ and static/, every page renders unstyled and every existing
+          # test still passes; this is the only check that would notice.
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:18081/static/css/tokens.css)" = '200'
+
+          # Readiness must report 503 against the unreachable database above, not
+          # 200. A readiness probe that always passes is not a probe.
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:18081/readyz)" = '503'
+
       - name: Log in to GHCR
         if: github.event_name == 'push'
         uses: docker/login-action@v4

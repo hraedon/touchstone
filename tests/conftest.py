@@ -109,10 +109,21 @@ def engine(dsn: str) -> Iterator[Engine]:
 
 @pytest.fixture
 def session(engine: Engine) -> Iterator[Session]:
-    """A session whose work is rolled back, so tests cannot bleed into each other."""
+    """A session whose work is rolled back, so tests cannot bleed into each other.
+
+    ``join_transaction_mode="create_savepoint"`` is what lets code under test call
+    ``commit()`` and ``rollback()`` the way it does in production — a rollback inside
+    the scheduler's error handling must undo that query's work, not the test's whole
+    outer transaction.
+    """
     connection = engine.connect()
     transaction = connection.begin()
-    sess = Session(bind=connection, expire_on_commit=False, future=True)
+    sess = Session(
+        bind=connection,
+        expire_on_commit=False,
+        future=True,
+        join_transaction_mode="create_savepoint",
+    )
     try:
         yield sess
     finally:

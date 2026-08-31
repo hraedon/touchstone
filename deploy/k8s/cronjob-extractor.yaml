@@ -1,0 +1,66 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: touchstone-extractor
+  namespace: touchstone
+spec:
+  # Offset from the scanner so the two are not competing for the same connection
+  # slots at the top of the hour. Kept as a separate CronJob on purpose: a scan must
+  # complete whether or not the model provider is reachable, and that separation is
+  # worth nothing if one job runs both.
+  schedule: "7 * * * *"
+  timeZone: Etc/UTC
+  # Explicit, for the same reason as the scanner: prune ships suspended.
+  suspend: false
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 1800
+      ttlSecondsAfterFinished: 86400
+      template:
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: extractor
+              image: ghcr.io/hraedon/touchstone@sha256:734bd326063f908bc48310bcbfb48241a315ddaa381885ab0533050a5f1dea9e
+              imagePullPolicy: IfNotPresent
+              command: ["touchstone", "extract"]
+              env:
+                - name: TOUCHSTONE_DSN
+                  valueFrom:
+                    secretKeyRef:
+                      name: touchstone-db-secrets
+                      key: TOUCHSTONE_DSN
+                - name: UMANS_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: touchstone-extract-secrets
+                      key: UMANS_API_KEY
+                # Not a secret, and explicit rather than defaulted: a model id ending
+                # in -lab is rejected at startup, and the value in force should be
+                # readable from the manifest rather than from the code.
+                - name: TOUCHSTONE_EXTRACT_MODEL
+                  value: umans-flash
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  cpu: 1000m
+                  memory: 512Mi

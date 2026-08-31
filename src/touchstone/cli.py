@@ -21,7 +21,9 @@ from touchstone.ebay.budget import BudgetGuard, recent_budgets
 from touchstone.ebay.client import Credentials, EbayClient
 from touchstone.extract.llm import DEFAULT_MODEL, UmansExtractor
 from touchstone.extract.runner import run_extraction
+from touchstone.scan.retention import DEFAULT_RETENTION_DAYS, prune
 from touchstone.scan.runner import ScanSkipped, run_scan
+from touchstone.scan.schedule import run_tick, scanner_lock
 
 log = logging.getLogger("touchstone")
 
@@ -118,6 +120,45 @@ def cmd_scan(args: argparse.Namespace) -> int:
         f"{result.cohorts} cohorts, {result.deals} deals, "
         f"{result.api_calls} API calls{capped}"
     )
+    return 0
+
+
+def cmd_tick(args: argparse.Namespace) -> int:
+    """Scan everything currently due. The entry point the scanner CronJob runs.
+
+    Exits 0 when another pass already holds the lock: an overlapping run is normal
+    operation, not a failure, and a CronJob that reports failure for it would train
+    an operator to ignore its alerts.
+    """
+    factory = make_session_factory(make_engine())
+    with factory() as session, scanner_lock(session) as acquired:
+        if not acquired:
+            print("another scanner pass holds the lock; nothing attempted")
+            return 0
+        with EbayClient(credentials=_credentials()) as client:
+            result = run_tick(session, client, limit=args.limit)
+        session.commit()
+
+    print(result.summary())
+    # A failure inside the pass is reported through the exit code so the CronJob
+    # shows it, but only after every other due query has had its turn.
+    return 1 if result.failed else 0
+
+
+def cmd_prune(args: argparse.Namespace) -> int:
+    """Drop old observations. Safe only because aggregates are never recomputed."""
+    factory = make_session_factory(make_engine())
+    with factory() as session:
+        try:
+            plan = prune(session, days=args.days, dry_run=not args.apply)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        if args.apply:
+            session.commit()
+
+    print(plan.summary())
+    if plan.dry_run:
+        print("dry run: nothing was deleted. Pass --apply to carry this out.")
     return 0
 
 
@@ -236,6 +277,26 @@ def build_parser() -> argparse.ArgumentParser:
     scan = sub.add_parser("scan", help="run one scan now")
     scan.add_argument("--query", required=True, help="query id or name")
     scan.set_defaults(func=cmd_scan)
+
+    tick = sub.add_parser("tick", help="scan every query that is due (the scheduler)")
+    tick.add_argument(
+        "--limit", type=int, default=None, help="at most this many queries this pass"
+    )
+    tick.set_defaults(func=cmd_tick)
+
+    prune_cmd = sub.add_parser(
+        "prune", help="drop observations older than a horizon (dry run by default)"
+    )
+    prune_cmd.add_argument(
+        "--days",
+        type=int,
+        default=DEFAULT_RETENTION_DAYS,
+        help=f"retention horizon in days (default {DEFAULT_RETENTION_DAYS})",
+    )
+    prune_cmd.add_argument(
+        "--apply", action="store_true", help="actually delete; without this it reports only"
+    )
+    prune_cmd.set_defaults(func=cmd_prune)
 
     scans = sub.add_parser("scans", help="recent scans")
     scans.add_argument("--limit", type=int, default=20)

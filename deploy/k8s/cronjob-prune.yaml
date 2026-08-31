@@ -1,0 +1,66 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: touchstone-prune
+  namespace: touchstone
+spec:
+  # SUSPENDED ON PURPOSE. This job deletes observations, and the database is days
+  # old with no operational experience of how it grows. It is written, tested and
+  # reviewed so that enabling it later is one deliberate command rather than a rush
+  # job under disk pressure:
+  #
+  #     kubectl -n touchstone patch cronjob touchstone-prune \
+  #       -p '{"spec":{"suspend":false}}'
+  #
+  # Before doing that, run it by hand and read the plan:
+  #
+  #     touchstone prune --days 365        # dry run; deletes nothing
+  #
+  # Pruning cannot change a single historical figure — statistics are materialized
+  # at scan time and never recomputed — but that is a property to verify, not to
+  # assume, and `--dry-run` is how you verify it.
+  suspend: true
+  schedule: "23 4 * * 0"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 3600
+      ttlSecondsAfterFinished: 604800
+      template:
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: prune
+              image: ghcr.io/hraedon/touchstone@sha256:734bd326063f908bc48310bcbfb48241a315ddaa381885ab0533050a5f1dea9e
+              imagePullPolicy: IfNotPresent
+              command: ["touchstone", "prune", "--days", "365", "--apply"]
+              env:
+                - name: TOUCHSTONE_DSN
+                  valueFrom:
+                    secretKeyRef:
+                      name: touchstone-db-secrets
+                      key: TOUCHSTONE_DSN
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi

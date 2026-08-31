@@ -49,3 +49,16 @@ def test_ci_gates_image_publication_and_smokes_the_hardened_container() -> None:
     assert "--cap-drop=ALL" in workflow
     assert "--security-opt=no-new-privileges" in workflow
     assert "docker/build-push-action@v7" in workflow
+
+
+def test_ci_smokes_the_web_ui_as_well_as_the_sink() -> None:
+    """Both entry points ship in one image; only one of them was ever proven to
+    start under the production constraints."""
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "touchstone-web-smoke" in workflow
+    assert "touchstone.web.app:create_app" in workflow
+    # The three things that fail silently: no assets, a readiness probe that always
+    # passes, and a UI that only starts as root.
+    assert "/static/css/tokens.css" in workflow
+    assert "/readyz" in workflow
+    assert "/livez" in workflow

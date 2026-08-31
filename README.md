@@ -125,22 +125,54 @@ export TOUCHSTONE_DSN=... TOUCHSTONE_SECRET_KEY=$(openssl rand -hex 32)
 uvicorn --factory touchstone.web.app:create_app --host 127.0.0.1 --port 8080
 ```
 
-There is no authentication. The UI is internal-only behind `traefik-internal`;
-whether it wants a login is decided with the ingress in Plan 004, not half-built here.
+There is no authentication, deliberately: the UI is reachable only from the LAN, and
+the worst a visitor can do is spend an API allowance that affects nothing outside
+touchstone. The cluster runs authentik if that ever stops being true — see
+`plans/004-schedule-and-serve.md` for what would change the decision.
+
+## Running in the cluster
+
+Five workloads in namespace `touchstone`, all from one pinned image digest:
+
+- **sink** — the eBay deletion endpoint, external on `ebdel.hraedon.com`, exposing
+  exactly one path. It also owns the migration init container; nothing else migrates.
+- **web** — the UI, internal on `touchstone.k8s.hraedon.com`. Deliberately not given
+  the eBay keyset, so a page load *cannot* spend API budget even if the code tried.
+- **scanner** — `touchstone tick` every 15 minutes. Scans whatever is due, most
+  overdue first, explicit requests ahead of the queue, and stops the pass entirely
+  when the allowance runs out rather than recording an identical refusal per query.
+  A Postgres advisory lock keeps it from overlapping an operator's manual scan, which
+  Kubernetes' own concurrency policy cannot see.
+- **extractor** — `touchstone extract`, hourly, a separate job on purpose: a scan
+  must complete whether or not the model provider is reachable, and that separation
+  is worth nothing if one job runs both.
+- **prune** — `touchstone prune`, weekly, and **shipped suspended**. Pruning
+  observations is only safe because aggregates are materialized at scan time and
+  never recomputed; that is a property to verify with the dry run, not to assume on a
+  schedule. Watched listings and undismissed deals are kept regardless of age, with
+  their whole history.
+
+`deploy/k8s/README.md` is the runbook: secret layout, release procedure, credential
+rotation, and how to enable retention.
 
 ## Status
 
 Plans 001 (foundation), 002 (specs, cohorts, deals), 004a (deletion endpoint and
-production-keyset activation), and 003 (web UI) are complete. The sink is deployed
+production-keyset activation), 003 (web UI), and 004 (schedule and serve) are
+complete. The sink is deployed
 and subscribed; an eBay-signed test notification produced one acknowledged,
 seller-identifier-free receipt.
 Production OAuth and Browse were exercised against live responses in memory, and the
 synthetic fixture shapes were reconciled without retaining a raw response.
 
-The first real scans have now run against the live keyset: 596 listings observed,
-488 of 500 distinct titles specced by the regex path, 111 cohorts, one disappearance
-and five flagged listings — all rendered and checked in the UI. What remains is Plan
-004: the scanner and extractor CronJobs, the internal UI ingress, and retention.
+Plan 004 adds the schedule and serves the UI: scanner, extractor and (suspended)
+prune CronJobs, the internal UI Deployment and ingress, per-purpose Secrets, and a
+rotated database credential.
+
+The first real scans ran against the live keyset by hand: 596 listings observed, 488
+of 500 distinct titles specced by the regex path, 111 cohorts, one disappearance and
+five flagged listings — all rendered and checked in the UI. From Plan 004 on, the
+cluster does that on its own.
 
 ## Development
 

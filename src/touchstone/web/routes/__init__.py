@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from touchstone.web.routes import dashboard, deals, queries, specs, trends, watch
+from touchstone.web.routes import dashboard, deals, health, queries, specs, trends, watch
 
 router = APIRouter()
+router.include_router(health.router)
 router.include_router(dashboard.router)
 router.include_router(queries.router)
 # Registered after queries so /queries/{id}/trend does not shadow /queries/new.

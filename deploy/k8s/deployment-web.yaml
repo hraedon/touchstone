@@ -1,0 +1,94 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: touchstone-web
+  namespace: touchstone
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: touchstone-web
+  template:
+    metadata:
+      labels:
+        app: touchstone-web
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: web
+          image: ghcr.io/hraedon/touchstone@sha256:734bd326063f908bc48310bcbfb48241a315ddaa381885ab0533050a5f1dea9e
+          imagePullPolicy: IfNotPresent
+          # --factory, because SessionMiddleware needs the signing key when the app
+          # object is constructed. That cannot be deferred into a lifespan hook the
+          # way the sink defers its settings, so there is no module-level `app`.
+          command:
+            - uvicorn
+            - --factory
+            - touchstone.web.app:create_app
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8080"
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            # Deliberately NOT given the eBay keyset. The UI is the one component
+            # that must never be able to call eBay: a page load may not spend from a
+            # 5,000-a-day allowance, and withholding the credentials makes that a
+            # property of the deployment rather than a rule someone has to remember.
+            - name: TOUCHSTONE_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: touchstone-db-secrets
+                  key: TOUCHSTONE_DSN
+            - name: TOUCHSTONE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: touchstone-web-secrets
+                  key: TOUCHSTONE_SECRET_KEY
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            # Touches the database: a pod that cannot reach Postgres has nothing to
+            # render, so it should leave the load balancer rather than serve errors.
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            # Does NOT touch the database. A Postgres blip is a reason to stop taking
+            # traffic, not a reason to be killed — restarting on it turns a brief
+            # outage into a crash loop.
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 25m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      terminationGracePeriodSeconds: 30

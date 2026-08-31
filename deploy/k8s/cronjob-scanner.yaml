@@ -1,0 +1,71 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: touchstone-scanner
+  namespace: touchstone
+spec:
+  # Every 15 minutes asks "is anything due"; the cadence itself lives on the query,
+  # so this interval is the scheduler's resolution, not its rate. A query set to 60
+  # minutes is still scanned hourly.
+  schedule: "*/15 * * * *"
+  timeZone: Etc/UTC
+  # Forbid stops the job colliding with itself. It cannot see an operator running
+  # `touchstone scan` by hand — the Postgres advisory lock in scan/schedule.py is
+  # what covers that, and exits 0 rather than failing.
+  # Explicit, because a sibling CronJob (prune) ships suspended and the three
+  # should be readable side by side.
+  suspend: false
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      # A scan that has run for ten minutes is stuck, and retrying it would spend
+      # more of a finite daily allowance on the same problem.
+      activeDeadlineSeconds: 600
+      ttlSecondsAfterFinished: 86400
+      template:
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: scanner
+              image: ghcr.io/hraedon/touchstone@sha256:734bd326063f908bc48310bcbfb48241a315ddaa381885ab0533050a5f1dea9e
+              imagePullPolicy: IfNotPresent
+              command: ["touchstone", "tick"]
+              env:
+                - name: TOUCHSTONE_DSN
+                  valueFrom:
+                    secretKeyRef:
+                      name: touchstone-db-secrets
+                      key: TOUCHSTONE_DSN
+                - name: EBAY_CLIENT_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: touchstone-ebay-secrets
+                      key: EBAY_CLIENT_ID
+                - name: EBAY_CLIENT_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: touchstone-ebay-secrets
+                      key: EBAY_CLIENT_SECRET
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  cpu: 1000m
+                  memory: 512Mi

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session
 
 from tests.conftest import WebHarness
 from tests.factories import (
@@ -386,3 +389,47 @@ class TestDegenerateBand:
         body = harness.client.get("/deals").text
         assert "no spread" in body
         assert "fallback of 5% of the price level" in body
+
+
+class TestHealth:
+    def test_liveness_answers_without_touching_the_database(
+        self, harness: WebHarness
+    ) -> None:
+        response = harness.client.get("/livez")
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok"}
+
+    def test_readiness_reports_the_database(self, harness: WebHarness) -> None:
+        response = harness.client.get("/readyz")
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok", "database": "ok"}
+
+    def test_readiness_turns_503_when_the_database_will_not_answer(
+        self, harness: WebHarness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A pod that cannot reach Postgres should leave the load balancer.
+
+        Injected rather than simulated: the check must fail on a real exception from
+        the session, which is the only shape this failure actually takes.
+        """
+        from touchstone.web.routes import health
+
+        def refuse(self: object, *args: object, **kwargs: object) -> None:
+            raise OperationalError("SELECT 1", {}, Exception("connection refused"))
+
+        monkeypatch.setattr(Session, "execute", refuse)
+        response = harness.client.get("/readyz")
+        assert response.status_code == 503
+        assert response.json()["database"] == "unreachable"
+        assert health.router is not None
+
+    def test_liveness_survives_a_dead_database(
+        self, harness: WebHarness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The point of splitting them: a Postgres blip must not restart the pod."""
+
+        def refuse(self: object, *args: object, **kwargs: object) -> None:
+            raise OperationalError("SELECT 1", {}, Exception("connection refused"))
+
+        monkeypatch.setattr(Session, "execute", refuse)
+        assert harness.client.get("/livez").status_code == 200
