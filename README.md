@@ -89,11 +89,14 @@ and no work-domain identifiers in committed files.
 
 ## Status
 
-Plans 001 (foundation) and 002 (specs, cohorts, deals) are complete. The Plan 004a
-sink, image, and external-ingress manifests are implemented; production Secret
-provisioning and eBay endpoint activation remain. Plan 003 is the web UI, followed by
-the remaining scanner/extractor deployment work in Plan 004. Nothing has scanned
-live yet.
+Plans 001 (foundation), 002 (specs, cohorts, deals), and 004a (deletion endpoint and
+production-keyset activation) are complete. The sink is deployed and subscribed; an
+eBay-signed test notification produced one acknowledged, seller-identifier-free
+receipt.
+Production OAuth and Browse were exercised against live responses in memory, and the
+synthetic fixture shapes were reconciled without retaining a raw response. Plan 003
+is the web UI, followed by the remaining scanner/extractor deployment work in Plan
+004. No scheduled marketplace scan has run yet.
 
 ## Development
 

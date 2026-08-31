@@ -87,6 +87,26 @@ def test_per_gb_computed_when_every_member_is_specced() -> None:
     assert cohort.per_gb.median == 3.0
 
 
+def test_unknown_totals_are_excluded_from_price_and_per_gb_statistics() -> None:
+    items = [
+        Priced("a", 64.0, "USD", total_gb=32),
+        Priced("a", 96.0, "USD", total_gb=32),
+        Priced("a", None, "USD", total_gb=32),
+    ]
+    (cohort,) = cohort_stats(items)
+    assert cohort.price.n == 2
+    assert cohort.price.minimum == 64.0
+    assert cohort.price.median == 80.0
+    assert cohort.per_gb is not None
+    assert cohort.per_gb.n == 2
+    assert cohort.per_gb.minimum == 2.0
+    assert cohort.per_gb.median == 2.5
+
+
+def test_an_all_unknown_total_cohort_produces_no_aggregate() -> None:
+    assert cohort_stats([Priced("a", None, "USD", total_gb=32)]) == []
+
+
 def test_cohort_key_separates_conditions() -> None:
     """New and pulled-from-a-server memory are different goods at different prices;
     a statistic blending them describes neither."""

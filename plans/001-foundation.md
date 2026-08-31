@@ -116,3 +116,9 @@ call has been made.
   `itemCreationDate` is present on `ItemSummary`, and the exact shipping-cost shape,
   must be confirmed against the first live response and the fixtures corrected. This
   is tracked, not forgotten — `tests/fixtures/RECORDED.md` lists every assumed field.
+
+  **Closed 2026-08-30 by Plan 004a.** Two production responses were inspected only
+  in memory after keyset activation. Synthetic value types matched the consumed
+  fields; the fixture builder was extended for a shipping option with no nested cost.
+  `itemCreationDate` was present. The response bodies and values were discarded. See
+  `tests/fixtures/RECORDED.md` for the field/type report.

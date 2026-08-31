@@ -78,7 +78,7 @@ class Priced:
     """The minimum an aggregate needs about one observed listing."""
 
     cohort_key: str
-    total_cost: float
+    total_cost: float | None
     currency: str
     total_gb: int | None = None
 
@@ -96,17 +96,27 @@ def cohort_stats(items: list[Priced]) -> list[CohortStats]:
 
     results: list[CohortStats] = []
     for (key, currency), group in sorted(buckets.items()):
-        prices = [item.total_cost for item in group]
+        # Item price remains observable when shipping is absent, but the delivered
+        # total is not. Unknown totals do not belong in a total-cost distribution.
+        known: list[tuple[float, int | None]] = []
+        for item in group:
+            if item.total_cost is not None:
+                known.append((item.total_cost, item.total_gb))
+        if not known:
+            continue
+
+        prices = [cost for cost, _total_gb in known]
 
         per_gb_values = [
-            item.total_cost / item.total_gb
-            for item in group
-            if item.total_gb is not None and item.total_gb > 0
+            cost / total_gb
+            for cost, total_gb in known
+            if total_gb is not None and total_gb > 0
         ]
-        # Only report $/GB when the whole cohort is specced. A partial figure would
-        # silently describe a different population than the price figure beside it.
+        # Only report $/GB when every known-total member is specced. A partial figure
+        # would silently describe a different population than the price figure beside
+        # it; unknown-total members are already outside both distributions.
         per_gb = (
-            Stats.of(per_gb_values) if per_gb_values and len(per_gb_values) == len(group) else None
+            Stats.of(per_gb_values) if per_gb_values and len(per_gb_values) == len(known) else None
         )
 
         results.append(

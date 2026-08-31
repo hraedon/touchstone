@@ -2,10 +2,10 @@
 
 Two complementary checks:
 
-1. Always-on (no configuration): runtime data and operator secrets may not be
-   tracked. ``.gitignore`` is advisory — ``git add -f`` bypasses it — so this
-   guard makes an accidental force-add of ``samples/``, ``data/``, a local
-   ``.env*``, or a generated Kubernetes Secret fail CI.
+1. Always-on (no configuration): runtime data, operator secrets, and Vim swap files
+   may not be tracked. ``.gitignore`` is advisory — ``git add -f`` bypasses it — so
+   this guard rejects force-added ``samples/`` or ``data/`` files, local ``.env*``
+   files, generated Kubernetes Secrets, and Vim's swap collision sequence.
 
 2. Secret-driven: when ``TOUCHSTONE_FORBIDDEN_IDENTIFIERS`` is set (a
    whitespace-separated list of real identifiers — hostnames, emails, service
@@ -51,6 +51,8 @@ _BINARY_SNIFF_LEN = 8192
 _SKIP_DIRS = frozenset({".venv"})
 # Root-level gitignored data dirs that must never contain a tracked file.
 _GUARDED_DIRS = frozenset({"samples", "data"})
+_EDITOR_SWAP_SUFFIXES = frozenset({".swp", ".swo"})
+_VIM_COLLISION_SUFFIX = re.compile(r"\.s[a-w][a-z]\Z")
 
 
 @dataclass(frozen=True)
@@ -354,13 +356,19 @@ def print_report(violations: list[Violation]) -> None:
 
 
 def leaked_tracked_files(paths: list[Path], guarded: frozenset[str]) -> list[Path]:
-    """Tracked paths that are reserved for runtime data or operator secrets.
+    """Tracked paths reserved for runtime data, operator secrets, or Vim swap data.
 
     Directory matching uses only the first path component, so ``tests/data/`` is
     not a false positive. ``.env.example`` is the deliberately tracked template.
     """
     leaked: list[Path] = []
     for path in paths:
+        is_vim_collision = path.name.startswith(".") and _VIM_COLLISION_SUFFIX.fullmatch(
+            path.suffix
+        )
+        if path.suffix in _EDITOR_SWAP_SUFFIXES or is_vim_collision:
+            leaked.append(path)
+            continue
         if path.parts and path.parts[0] in guarded:
             leaked.append(path)
             continue
@@ -467,12 +475,16 @@ def _run(args: argparse.Namespace) -> int:
     #    catches a ``git add -f samples/...`` leak regardless of secret config.
     leaked = leaked_tracked_files(paths, _GUARDED_DIRS)
     if leaked:
-        print("Tracked runtime-data or operator-secret paths detected:", file=sys.stderr)
+        print(
+            "Tracked runtime-data, operator-secret, or Vim-swap paths detected:",
+            file=sys.stderr,
+        )
         for p in sorted(leaked, key=str):
             print(f"  {p}", file=sys.stderr)
         print(
-            "\nThese paths are reserved for runtime data or operator-generated "
-            "secrets. Remove them from the index: git rm --cached -r <path>.",
+            "\nThese paths are reserved for runtime data, operator-generated secrets, "
+            "or Vim swap data. Remove them from the index: "
+            "git rm --cached -r <path>.",
             file=sys.stderr,
         )
         return 1

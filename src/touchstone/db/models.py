@@ -204,7 +204,8 @@ class ListingObservation(Base):
 
     price: Mapped[float] = mapped_column(Numeric(12, 2))
     shipping_cost: Mapped[float | None] = mapped_column(Numeric(12, 2))
-    total_cost: Mapped[float] = mapped_column(Numeric(12, 2))
+    # Null when eBay omits shipping. Item price remains a fact; total cost does not.
+    total_cost: Mapped[float | None] = mapped_column(Numeric(12, 2))
     currency: Mapped[str] = mapped_column(String(3), default="USD")
 
     listing: Mapped[Listing] = relationship(back_populates="observations")
@@ -235,7 +236,7 @@ class ListingDisappearance(Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_price: Mapped[float] = mapped_column(Numeric(12, 2))
-    last_total_cost: Mapped[float] = mapped_column(Numeric(12, 2))
+    last_total_cost: Mapped[float | None] = mapped_column(Numeric(12, 2))
     currency: Mapped[str] = mapped_column(String(3), default="USD")
 
 

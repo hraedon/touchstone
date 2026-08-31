@@ -82,7 +82,13 @@ def test_scan_records_observations_and_aggregates(
     observations = session.scalars(select(ListingObservation)).all()
     assert len(observations) == 3
     # total_cost includes shipping (0.00 in these fixtures)
-    assert sorted(float(o.total_cost) for o in observations) == [100.0, 200.0, 300.0]
+    totals = [o.total_cost for o in observations]
+    assert None not in totals
+    assert sorted(float(total) for total in totals if total is not None) == [
+        100.0,
+        200.0,
+        300.0,
+    ]
 
     # Two conditions -> two cohorts.
     aggregates = session.scalars(select(ScanAggregate)).all()
@@ -108,7 +114,86 @@ def test_shipping_is_included_in_total_cost(
     assert float(obs.price) == 90.0
     assert obs.shipping_cost is not None
     assert float(obs.shipping_cost) == 12.5
+    assert obs.total_cost is not None
     assert float(obs.total_cost) == 102.5
+
+
+def test_missing_shipping_keeps_total_unknown_and_out_of_aggregates(
+    session: Session, make_query: MakeQuery
+) -> None:
+    """Unknown shipping is not free shipping.
+
+    The listing remains an observation because its item price is a fact, but it must
+    not contribute a fabricated total to the asking-cost distribution.
+    """
+    unknown = item(
+        "v1|unknown|0",
+        price=1.0,
+        shipping=None,
+        shipping_options_without_cost=True,
+    )
+    parsed = parse_item_summary(unknown)
+    assert parsed is not None
+    assert parsed.shipping_cost is None
+    assert parsed.total_cost is None
+
+    free = parse_item_summary(item("v1|free|0", price=1.0, shipping=0.0))
+    assert free is not None
+    assert free.shipping_cost == 0.0
+    assert free.total_cost == 1.0
+
+    fake = FakeEbay(
+        generations=[
+            Generation(
+                items=[
+                    item("v1|known-1|0", price=100.0),
+                    item("v1|known-2|0", price=200.0),
+                    unknown,
+                ]
+            )
+        ]
+    )
+    url = fake.start()
+    query = make_query()
+    try:
+        result = run(session, fake, query, url)
+    finally:
+        fake.stop()
+
+    assert result.observed == 3
+    observation = session.scalars(
+        select(ListingObservation).where(ListingObservation.listing_id == "v1|unknown|0")
+    ).one()
+    assert observation.price == 1.0
+    assert observation.shipping_cost is None
+    assert observation.total_cost is None
+
+    (aggregate,) = session.scalars(select(ScanAggregate)).all()
+    assert aggregate.n == 2
+    assert float(aggregate.price_min) == 100.0
+
+
+def test_disappearance_preserves_an_unknown_last_total(
+    session: Session, make_query: MakeQuery
+) -> None:
+    fake = FakeEbay(
+        generations=[
+            Generation(items=[item("v1|unknown|0", price=100.0, shipping=None)]),
+            Generation(items=[]),
+        ]
+    )
+    url = fake.start()
+    query = make_query()
+    try:
+        run(session, fake, query, url)
+        fake.advance()
+        run(session, fake, query, url)
+    finally:
+        fake.stop()
+
+    (gone,) = session.scalars(select(ListingDisappearance)).all()
+    assert float(gone.last_price) == 100.0
+    assert gone.last_total_cost is None
 
 
 def test_price_change_across_scans_yields_two_observations(
@@ -161,6 +246,7 @@ def test_vanished_listing_is_recorded_as_a_disappearance(
     assert result.disappearances == 1
     (gone,) = session.scalars(select(ListingDisappearance)).all()
     assert gone.listing_item_id == "v1|2|0"
+    assert gone.last_total_cost is not None
     assert float(gone.last_total_cost) == 250.0
 
 

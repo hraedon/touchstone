@@ -106,6 +106,14 @@ neither.
 Normalization is `total_cost / total_gb`, where `total_cost` includes shipping and
 `total_gb = capacity_per_module_gb × module_count`.
 
+`total_cost` exists only when eBay supplies a shipping cost. A missing shipping cost
+is unknown, not free: the observation keeps the item price and records both
+`shipping_cost` and `total_cost` as null. Listings with an unknown total are excluded
+from total-cost aggregates, `$/GB`, and deal scoring; an aggregate's `n` is the count
+of listings with known totals that actually contributed to it. Their presence still
+counts in the scan result, and a later disappearance retains the known item price
+with a null last total. This is deliberate missingness, not imputation.
+
 **The lot multiplier is the highest-consequence field in the system.** A listing
 titled "Lot of 4 × 32GB PC4-2400" at $200 is $1.56/GB. Read as a single 32GB module
 it is $6.25/GB — a 4× error that manufactures a nonexistent bargain *and* poisons the

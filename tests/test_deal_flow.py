@@ -89,6 +89,34 @@ def test_a_deal_is_flagged_once_not_every_scan(session: Session, query: Query) -
     assert len(session.scalars(select(Deal)).all()) == 1
 
 
+def test_unknown_shipping_cannot_manufacture_a_deal(
+    session: Session, query: Query
+) -> None:
+    """A low item price with unknown delivery cost has no comparable total cost."""
+    listings = market(n=8, price=100.0)
+    listings.append(
+        item(
+            "v1|unknown-shipping|0",
+            price=32.0,
+            shipping=None,
+            title=SPEC,
+            seller="unknown_shipping_seller",
+        )
+    )
+
+    fake = FakeEbay(generations=[Generation(items=listings)])
+    url = fake.start()
+    try:
+        scan(session, url, query)
+        run_extraction(session, extractor=None)
+        result = scan(session, url, query)
+    finally:
+        fake.stop()
+
+    assert result.deals == 0
+    assert session.scalars(select(Deal)).all() == []
+
+
 def test_cheap_listing_in_a_different_cohort_is_not_a_deal(
     session: Session, query: Query
 ) -> None:

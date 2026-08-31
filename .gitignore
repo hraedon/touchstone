@@ -12,9 +12,9 @@ build/
 .mypy_cache/
 .hypothesis/
 
-# Runtime data — never commit observed listing data. It contains eBay seller
-# identifiers, which are exactly the personal data the deletion endpoint exists
-# to erase; a committed copy would be unreachable by the purge.
+# Runtime data — never commit observed listing data. Raw Browse responses contain
+# seller identifiers that the client deliberately discards before persistence.
+# Putting a capture in git history would defeat that data-minimization boundary.
 samples/
 data/
 *.db
@@ -25,6 +25,12 @@ data/
 *.local
 .identifiers-denylist.local
 deploy/k8s/secret-*.yaml
+
+# Vim swap files can contain complete copies of secret-bearing buffers. The final
+# pattern covers Vim's collision sequence from .swp through .saa.
+*.swp
+*.swo
+.*.s[a-w][a-z]
 
 # Agent tooling (agent-notes writes SessionStart/Stop hooks here per checkout)
 .claude/

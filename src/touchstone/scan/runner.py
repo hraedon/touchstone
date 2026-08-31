@@ -143,7 +143,7 @@ def _previous_snapshot(session: Session, scan_id: int) -> list[PreviousListing]:
             item_id=str(row.listing_id),
             cohort_key=_cohort_of(specs.get(str(row.title_hash)), row.condition_id),
             last_price=float(row.price),
-            last_total_cost=float(row.total_cost),
+            last_total_cost=float(row.total_cost) if row.total_cost is not None else None,
             currency=str(row.currency),
         )
         for row in rows
@@ -207,7 +207,12 @@ def _flag_deals(
         key = cohort_of[parsed.item_id]
         stats = per_gb_by_cohort.get(key)
         total_gb = gb_of[parsed.item_id]
-        if stats is None or total_gb is None or total_gb <= 0:
+        if (
+            parsed.total_cost is None
+            or stats is None
+            or total_gb is None
+            or total_gb <= 0
+        ):
             continue
 
         spec = specs.get(title_hash(parsed.title))

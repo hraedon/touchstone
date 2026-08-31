@@ -1,49 +1,60 @@
-# Fixture provenance
+# Fixture provenance and live verification
 
-These fixtures are **hand-authored from eBay's documented response schema**, not
-recorded from a live account — touchstone has a production keyset but the endpoint
-is not yet activated, so no real response has been observed.
+The committed fixtures are synthetic and were originally hand-authored from eBay's
+documented response schema. They contain no observed listing or seller value.
 
-That makes them a shaped guess, and a guess in a fixture is exactly the kind of thing
-that produces a confidently green suite over a client that cannot parse reality. Every
-assumed field is listed here so it can be checked against the first live response
-rather than quietly trusted.
+After production activation on 2026-08-30, two ten-result Browse responses were
+inspected only in memory: the first for field presence and types, the second through
+touchstone's real `parse_item_summary()` boundary. The response bodies and all field
+values were discarded. Only the aggregate, identifier-free report below was retained.
 
-## Assumed present on `ItemSummary`
+This deliberately tightens the original plan, which proposed keeping a raw response
+under gitignored `samples/`. A raw `ItemSummary` carries `seller.username`; retaining
+it was unnecessary once the same compatibility check could be done in memory.
 
-| Field | Assumption | Confidence |
+## Live field report
+
+The counts below describe one ten-item production response. A second ten-item
+response independently parsed 10/10 through touchstone. They verify compatibility,
+not an API guarantee that optional fields will always have the same presence rate.
+
+| Field | Production observation | Client treatment |
 | --- | --- | --- |
-| `itemId` | Present, string, `v1\|<id>\|0` form | High — documented, used as the PK |
-| `title` | Present, string | High |
-| `price.value` / `price.currency` | Present; `value` is a decimal **string**, not a number | High |
-| `seller.username` | Present | Medium — assumed always populated |
-| `condition` / `conditionId` | Present for most items; both nullable in our schema | Medium |
-| `buyingOptions` | Array of strings | High |
-| `shippingOptions[0].shippingCost` | Present when shipping is known; **absent for freight/local-pickup** | **Low** |
-| `itemWebUrl`, `image.imageUrl`, `categories[0].categoryId` | Present | Medium |
+| `itemId` | 10/10 strings; 10/10 matched the `v1\|<id>\|<number>` form | Required and retained as the listing key |
+| `title` | 10/10 strings | Retained verbatim |
+| `price.value` / `price.currency` | 10/10 strings | Required; numeric value parsed for storage |
+| `seller.username` | 10/10 strings | Deliberately discarded before `ParsedListing` |
+| `seller.feedbackScore` | 10/10 integers | Read only for filtering, then discarded |
+| `condition` / `conditionId` | 10/10 strings | Retained when present; remains nullable |
+| `buyingOptions` | 10/10 lists with string elements | Retained as a tuple of strings |
+| `shippingOptions` | Non-empty on 10/10; first `shippingCost.value` present on 8/10 and a string | Missing cost remains `None`, never inferred as free |
+| `itemWebUrl` | 10/10 strings | Retained when present |
+| `image.imageUrl` | 10/10 strings | Retained when present |
+| `categories[0].categoryId` | 10/10 strings | Retained when present |
+| `itemCreationDate` | 10/10 strings | Observed but deliberately unused |
+| `estimatedAvailabilities` | 0/10 | Deliberately unused |
 
-## Not assumed, and deliberately unused
+The top-level response fields were `href`, `itemSummaries`, `limit`, `next`, `offset`,
+and `total`. The live item union included additional documented presentation and
+location fields, but touchstone does not parse them because they are outside the
+measurement model.
 
-- `itemCreationDate` — may or may not be on `ItemSummary`. Nothing depends on it. If
-  it is present it would let us distinguish a genuinely new listing from one that
-  merely entered our result window, which would materially improve the disappearance
-  series. Worth re-checking against a live response.
-- `estimatedAvailabilities` / any sold-quantity field — believed to be on `getItem`
-  only, not `ItemSummary`. A per-item `getItem` call costs one unit of the 5,000/day
-  budget, so this is only affordable for the watchlist, never for a full scan.
+## Shipping is optional at the value boundary
 
-## The one that will bite first
+The first shipping option existed for all ten sampled items, but two lacked a nested
+`shippingCost`. That is the distinction the client already models:
+`shipping_cost=None` means unknown, while an explicit `"0.00"` means free shipping.
+Conflating those states would bias every affected total and `$/GB` figure downward.
 
-`shippingOptions` absence. `total_cost = price + shipping`, and the client treats a
-missing shipping cost as `None` (recorded) rather than `0.0` (assumed). A listing with
-free shipping and a listing with unknown shipping must not both record `0.00` — one is
-a fact and the other is missing data, and conflating them biases every `$/GB` figure
-downward for the affected cohort.
+## Reconciliation result
 
-## On first live response
-
-1. Capture one raw `item_summary/search` response to `samples/` (gitignored — it
-   contains seller identifiers, which the purge must be able to reach).
-2. Diff its field set against this table.
-3. Correct the fixtures, then re-run the suite and confirm it still passes for the
-   right reasons.
+- All ten items in the parser-validation response produced a `ParsedListing`.
+- `ParsedListing` contains item, price, shipping, condition, buying-option, URL,
+  image, and category fields only. It has no seller username, user id, eiasToken, or
+  seller feedback field.
+- The synthetic values and types already matched every field the client consumes, so
+  no observed value was copied. The fixture builder was extended to reproduce one
+  structural variant seen live: a non-empty shipping option with no `shippingCost`.
+- `itemCreationDate` is available on the sampled summaries. Using it to distinguish a
+  genuinely new listing from one entering the result window remains a future
+  measurement-model decision, not an opportunistic parser change.

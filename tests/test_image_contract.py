@@ -24,7 +24,16 @@ def test_build_context_excludes_secrets_and_observed_data() -> None:
         for line in (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.lstrip().startswith("#")
     }
-    assert {".env", ".env.*", "deploy/k8s/secret-*.yaml", "samples/", "data/"} <= ignored
+    assert {
+        ".env",
+        ".env.*",
+        "*.swp",
+        "*.swo",
+        ".*.s[a-w][a-z]",
+        "deploy/k8s/secret-*.yaml",
+        "samples/",
+        "data/",
+    } <= ignored
 
 
 def test_ci_gates_image_publication_and_smokes_the_hardened_container() -> None:

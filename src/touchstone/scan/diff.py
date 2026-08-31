@@ -24,7 +24,7 @@ class PreviousListing:
     item_id: str
     cohort_key: str
     last_price: float
-    last_total_cost: float
+    last_total_cost: float | None
     currency: str
 
 
@@ -33,7 +33,7 @@ class Disappearance:
     item_id: str
     cohort_key: str
     last_price: float
-    last_total_cost: float
+    last_total_cost: float | None
     currency: str
 
 

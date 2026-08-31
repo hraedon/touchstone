@@ -12,6 +12,9 @@ __pycache__/
 # responses out of the context too so a future broad COPY cannot capture them.
 .env
 .env.*
+*.swp
+*.swo
+.*.s[a-w][a-z]
 deploy/k8s/secret-*.yaml
 samples/
 data/

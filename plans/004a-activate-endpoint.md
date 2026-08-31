@@ -2,6 +2,22 @@
 
 **Do this before Plan 003, not after.**
 
+> **Completed 2026-08-30.** DNS, public TLS, the pinned production image, migration,
+> Secret, Deployment, Service, and path-scoped external Ingress are live. eBay
+> accepted the challenge and reports the subscription active. Its signed test
+> notification produced exactly one acknowledged receipt and no pending receipt.
+> Production OAuth and Browse both returned `200`; two ten-result responses were
+> checked in memory, all ten summaries in the parser pass succeeded, and no response
+> body or field value was retained. `tests/fixtures/RECORDED.md` records the
+> identifier-free shape report. A pre-migration production check found zero listing
+> observations, disappearances, aggregates, or deals, so correcting unknown-shipping
+> semantics required no historical rewrite.
+>
+> **Deployment deviation:** the initial Secret reused the existing dedicated
+> database credential instead of regenerating it. Rotate that credential before Plan
+> 004 adds more workloads. The plan below otherwise remains as the historical scope
+> and rationale.
+
 ## Why it moves first
 
 eBay activates a production keyset only once the application is subscribed to
@@ -74,17 +90,18 @@ copying the `usage-dashboard-readings-ext` pattern: `ingressClassName: traefik-e
 the sink routes are exposed.
 
 Secret (operator-generated, gitignored): `TOUCHSTONE_DSN`, `VERIFICATION_TOKEN`,
-`ENDPOINT_URL`, `EBAY_CLIENT_ID`, `EBAY_CLIENT_SECRET`. The DSN password is
-regenerated here rather than rotated earlier.
+`ENDPOINT_URL`, `EBAY_CLIENT_ID`, `EBAY_CLIENT_SECRET`. The activation deployment
+reused the existing dedicated DSN credential; its planned rotation remains an
+operator follow-up before Plan 004.
 
 ### WI-022 — Register and activate
 Developer Portal → Alerts and Notifications: alert email, endpoint URL, verification
 token, Save. eBay sends the challenge immediately. Then **Send Test Notification** to
 exercise the POST path, and confirm a `deletion_receipt` row lands.
 
-Then capture one live search response into `samples/` (gitignored — it contains
-`seller.username` even though we never store it) and reconcile
-`tests/fixtures/RECORDED.md`.
+Then inspect a live search response in memory, retain only aggregate field/type
+metadata, and reconcile `tests/fixtures/RECORDED.md`. Do not retain the raw response:
+it contains `seller.username`, which the application deliberately discards.
 
 ## Operator prerequisites
 

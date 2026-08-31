@@ -62,7 +62,7 @@ class ParsedListing:
     price: float
     currency: str
     shipping_cost: float | None
-    total_cost: float
+    total_cost: float | None
     condition: str | None
     condition_id: str | None
     buying_options: tuple[str, ...]
@@ -220,7 +220,9 @@ def parse_item_summary(
         price=price,
         currency=currency,
         shipping_cost=shipping,
-        total_cost=price + (shipping or 0.0),
+        # Missing shipping is unknown, not free. Preserve the missingness through
+        # persistence and keep this listing out of total-cost statistics.
+        total_cost=price + shipping if shipping is not None else None,
         condition=str(item["condition"]) if item.get("condition") else None,
         condition_id=str(item["conditionId"]) if item.get("conditionId") else None,
         buying_options=buying_options,

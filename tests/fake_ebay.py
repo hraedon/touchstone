@@ -25,6 +25,7 @@ def item(
     price: float,
     title: str = "32GB 2Rx4 PC4-2400T ECC REG Server Memory",
     shipping: float | None = 0.0,
+    shipping_options_without_cost: bool = False,
     seller: str = "seller_one",
     condition: str = "Used",
     condition_id: str = "3000",
@@ -56,6 +57,10 @@ def item(
         node["shippingOptions"] = [
             {"shippingCost": {"value": f"{shipping:.2f}", "currency": currency}}
         ]
+    elif shipping_options_without_cost:
+        # Observed in production: the option can exist without shippingCost. This
+        # differs from both a missing option and an explicit 0.00 (free shipping).
+        node["shippingOptions"] = [{}]
     return node
 
 

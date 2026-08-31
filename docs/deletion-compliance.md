@@ -99,6 +99,14 @@ eBay says otherwise.
 `letsencrypt-prod-porkbun`, path-scoped so only the sink is exposed. The management
 UI is never reachable from outside.
 
+The endpoint was deployed and subscribed in eBay's production portal on 2026-08-30.
+The validation challenge succeeded, and the portal's signed test notification was
+acknowledged with `200`. Database readback showed one receipt, one acknowledged, and
+zero pending. The receipt contains only the notification id and timestamps; no
+username, user id, or eiasToken is accepted by the persistence layer. A production
+schema inspection covered 12 tables and 109 columns and found zero columns designated
+for or populated from seller identifiers.
+
 The name is deliberately not self-describing. Every hostname a Let's Encrypt
 certificate is issued for is published in the public Certificate Transparency logs,
 permanently — so `ebay-deletions.hraedon.com` would advertise to anyone scanning CT
@@ -114,11 +122,14 @@ control.
 trailing slash and case, because the string is hashed into the challenge response. A
 mismatch fails endpoint validation with no useful error.
 
-**Credentials come from k8s Secrets at deploy time.** Plan 004a supplies the sink's
-DSN, eBay keyset, and verification token; Plan 004 later adds the extractor's umans
-key. The local `.env` is for development only. The database password is deliberately
-*not* being rotated before then: it will be regenerated when the Secret is created,
-so rotating now would just mean doing it twice.
+**Credentials come from k8s Secrets at deploy time.** The deployed Plan 004a Secret
+supplies the sink's DSN, eBay client id and secret, endpoint URL, and verification
+token; the notification public key is fetched from eBay and cached, not injected as
+a keyset. Plan 004 later adds the extractor's umans key. The gitignored local `.env`
+was the operator-held source for the initial Secret and is never copied into the
+image or repository. That initial deployment reused the existing dedicated database
+credential rather than performing the rotation described in the plan; rotate it
+before Plan 004 adds more workloads.
 
 ## Settled mechanics
 
