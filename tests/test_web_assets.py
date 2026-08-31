@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from tests.conftest import WebHarness
 from touchstone.web.app import STATIC_DIR, TEMPLATES_DIR
 
 STATIC_REF = re.compile(r"url_for\(\s*'static'\s*,\s*path\s*=\s*'([^']+)'\s*\)")
@@ -65,3 +66,37 @@ def test_no_template_reaches_outside_the_origin() -> None:
         for match in re.findall(r'(?:src|href)="(https?://[^"]+)"', body):
             offenders.append(f"{template.name} -> {match}")
     assert offenders == [], "\n".join(offenders)
+
+
+class TestTheRenderedPageCanActuallyLoadItsAssets:
+    """Serving the stylesheet is not the same as the page being able to load it.
+
+    Traefik terminates TLS, so without an honoured `X-Forwarded-Proto` the app emits
+    absolute `http://` URLs for its own stylesheets. A browser on an HTTPS page
+    blocks those as mixed content: the page renders completely unstyled while every
+    status check — including a direct fetch of the stylesheet, which returns 200 —
+    keeps passing. This was shipped, and looked fine from curl.
+    """
+
+    def test_asset_urls_follow_the_proxy_s_scheme(self, harness: WebHarness) -> None:
+        body = harness.client.get("/", headers={"X-Forwarded-Proto": "https"}).text
+        hrefs = re.findall(r'(?:href|src)="([^"]*/static/[^"]*)"', body)
+        assert hrefs, "no static references in the rendered page"
+        insecure = [href for href in hrefs if href.startswith("http://")]
+        assert insecure == [], (
+            f"a browser on an HTTPS page will silently refuse these: {insecure}"
+        )
+
+    def test_the_page_is_unchanged_when_served_directly_over_http(
+        self, harness: WebHarness
+    ) -> None:
+        """Mutation guard: the scheme must come from the header, not be hardcoded."""
+        body = harness.client.get("/").text
+        hrefs = re.findall(r'(?:href|src)="([^"]*/static/[^"]*)"', body)
+        assert hrefs
+        assert all(not href.startswith("https://") for href in hrefs)
+
+    def test_a_nonsense_forwarded_proto_is_ignored(self, harness: WebHarness) -> None:
+        response = harness.client.get("/", headers={"X-Forwarded-Proto": "gopher"})
+        assert response.status_code == 200
+        assert "gopher://" not in response.text

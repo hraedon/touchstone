@@ -178,6 +178,22 @@ jobs:
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
             http://127.0.0.1:18081/static/css/tokens.css)" = '200'
 
+          # Serving the stylesheet is not the same as the page being able to load
+          # it. Behind a TLS-terminating proxy the app must emit https asset URLs,
+          # or the browser blocks them as mixed content and the page renders
+          # unstyled while every status check above still passes. That shipped once.
+          #
+          # This route renders a real template — base.html and its stylesheet links
+          # — and rejects the parameter before it touches the database, so it works
+          # against the unreachable DSN this container is given.
+          page=$(curl --silent --header 'X-Forwarded-Proto: https' \
+            'http://127.0.0.1:18081/queries/1/trend?days=4000')
+          echo "$page" | grep -q 'href="https://[^"]*/static/css/tokens.css"' || {
+            echo "::error::asset URLs did not follow X-Forwarded-Proto"
+            echo "$page" | grep -o '<link[^>]*>' || true
+            exit 1
+          }
+
           # Readiness must report 503 against the unreachable database above, not
           # 200. A readiness probe that always passes is not a probe.
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' \

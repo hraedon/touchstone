@@ -23,6 +23,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, Request, Response
 from fastapi.staticfiles import StaticFiles
@@ -40,6 +41,40 @@ TEMPLATES_DIR = WEB_DIR / "templates"
 STATIC_DIR = WEB_DIR / "static"
 
 MAX_FORM_BYTES = 64 * 1024
+
+
+class ForwardedProto:
+    """Honour the scheme the reverse proxy actually served the request on.
+
+    Traefik terminates TLS and forwards plain HTTP to the pod, so without this the
+    application believes every request is ``http``. ``url_for`` then emits absolute
+    ``http://`` URLs for the stylesheets and the theme script, and a browser on an
+    HTTPS page silently blocks them as mixed content: the page renders, completely
+    unstyled, and every status check still passes. Fetching the stylesheet directly
+    returns 200 — it is served fine; it is the page's own reference to it that the
+    browser refuses.
+
+    Implemented here rather than as a uvicorn ``--proxy-headers`` flag so that it is
+    a property of the application, and therefore testable, instead of a command-line
+    argument a manifest can forget.
+
+    The header is trusted because the only route to this pod is through the cluster's
+    ingress. It carries no authority — it selects a scheme, nothing more — and the UI
+    has no authentication for it to influence.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope.get("type") == "http":
+            for key, value in scope.get("headers", []):
+                if key == b"x-forwarded-proto":
+                    proto = value.decode("latin-1").split(",")[0].strip().lower()
+                    if proto in {"http", "https"}:
+                        scope = {**scope, "scheme": proto}
+                    break
+        await self.app(scope, receive, send)
 
 
 @dataclass(frozen=True)
@@ -182,6 +217,8 @@ def create_app(
         return await call_next(request)
 
     app.include_router(router)
+    # Outermost, so every route and every url_for call below it sees the real scheme.
+    app.add_middleware(ForwardedProto)
     return app
 
 
