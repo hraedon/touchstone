@@ -1,5 +1,50 @@
 # Plan 004 — Put it on a schedule, and serve the UI
 
+> **Completed 2026-08-31.** All six work items landed and the cluster is running
+> them. Exit criterion met unattended: the scanner CronJob fired at 03:00 UTC and
+> reported `1 due, 1 scanned, 597 listings, 3 API calls` with no operator involved.
+> The UI serves at `touchstone.k8s.hraedon.com` (DNS CNAME to
+> `ingress.k8s.hraedon.com`, cert issued), and its pod holds **no** eBay variables at
+> all. The database credential was rotated and the sink verified end to end
+> afterwards. `touchstone prune --days 365` against production reports zero removals,
+> protects the five flagged listings, and leaves all 115 aggregates untouched.
+>
+> **A hazard-scoped review of the scheduler and prune paths found four real defects,
+> all now fixed and mutation-checked:**
+>
+> - **The quota read was itself expensive.** `BudgetGuard.state()` called eBay's
+>   getRateLimits every single time, and a pass calls it at least twice per query —
+>   so scanning forty queries would have made eighty Developer Analytics calls
+>   against a *separate* allowance, none of them recorded anywhere. This was visible
+>   in the very first production run: two getRateLimits requests to scan one query.
+>   One authoritative read now anchors the whole pass, with locally-recorded spend
+>   subtracted from it so the figure stays conservative.
+> - **A failed scan's spend was discarded.** `run_scan` records the calls it spent in
+>   the same transaction as the failure; `run_tick` then rolled that transaction back
+>   to recover the session, losing both the `FAILED` row and the accounting, so the
+>   next pass believed it had allowance it had already spent. The failure is now
+>   committed, with an explicit replay if even that fails.
+> - **Pruning had a race with scanning.** The protected ids and the orphan ids were
+>   read into Python before the deletes. A weekly prune routinely overlaps several
+>   fifteen-minute scanner passes, so a listing re-observed — or newly flagged, or
+>   just pinned from the UI — in that window would still have been deleted, taking
+>   the new observation or the unexamined flag with it. Every predicate is now
+>   evaluated by the database at delete time, and `prune --apply` takes the writer
+>   lock too.
+> - **The advisory lock was correct only by luck.** It rode the ORM session's pooled
+>   connection, and a pass commits repeatedly, returning that connection to the pool.
+>   It now opens its own.
+>
+> The first three of those were live defects in code already running in the cluster;
+> the fourth was latent. `plans/003` found its bugs from live data, and this plan
+> found its bugs from a review pointed at two named hazards — neither would have
+> surfaced from reading the diff.
+>
+> **Still outstanding:** touchstone has no umans credential of its own, so
+> `touchstone-extract-secrets` does not exist and extraction runs the regex path
+> only. The secret reference is `optional: true` precisely so that degrades rather
+> than stopping the pod.
+
 Plans 001–003 and 004a are complete and on `main`. The sink is deployed, the
 production keyset is active, and two scans have been run **by hand** from an
 operator laptop. That is the gap this plan closes: nothing in the cluster samples

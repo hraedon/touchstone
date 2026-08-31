@@ -27,6 +27,20 @@ What is never touched, and why
 Listings are also kept regardless of age when they are pinned to the watchlist or
 carry an undismissed deal. Both hold cascading foreign keys to ``listing``, so
 pruning one would unpin a listing or erase a flag nobody had looked at yet.
+
+Why the protections are subqueries and not a Python set
+-------------------------------------------------------
+An earlier version read the protected ids into a set, and the orphan ids into a
+list, and only then issued the deletes. Between those two moments a scanner pass —
+which runs every fifteen minutes, and would routinely overlap a weekly prune — can
+re-observe a listing that was about to be deleted, or flag a new deal on it. The
+delete would still name it, and the cascade would take the brand-new observation or
+the unexamined flag with it: exactly the silent history-rewrite this module claims
+cannot happen.
+
+So every predicate is evaluated by the database at the moment of the delete, inside
+one transaction, and the caller holds the same writer lock the scanner takes. The
+reported plan can still be a moment stale; the deletion cannot.
 """
 
 from __future__ import annotations
@@ -35,8 +49,8 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, func, select
-from sqlalchemy.orm import Session
+from sqlalchemy import ColumnElement, delete, func, select
+from sqlalchemy.orm import InstrumentedAttribute, Session
 
 from touchstone.db.models import Deal, Listing, ListingObservation, Watch
 
@@ -75,10 +89,18 @@ class PrunePlan:
         )
 
 
-def _protected_listing_ids(session: Session) -> set[str]:
-    watched = set(session.scalars(select(Watch.listing_id)))
-    flagged = set(
-        session.scalars(select(Deal.listing_id).where(Deal.dismissed_at.is_(None)))
+def _is_protected(listing_id: InstrumentedAttribute[str]) -> ColumnElement[bool]:
+    """Whether this listing is pinned or carries a flag nobody has dismissed.
+
+    Returned as a SQL expression rather than a set of ids so that it is evaluated by
+    the database at the moment of the delete. A set read earlier goes stale the
+    instant a scanner pass flags a new deal or an operator pins a listing.
+    """
+    watched = select(Watch.id).where(Watch.listing_id == listing_id).exists()
+    flagged = (
+        select(Deal.id)
+        .where(Deal.listing_id == listing_id, Deal.dismissed_at.is_(None))
+        .exists()
     )
     return watched | flagged
 
@@ -101,35 +123,46 @@ def prune(
         )
 
     cutoff = (now or datetime.now(UTC)) - timedelta(days=days)
-    protected = _protected_listing_ids(session)
 
     # A protected listing keeps its whole history, not just its row. The watchlist
     # draws that history; pruning it would leave a pinned listing with a blank chart,
     # which is a worse outcome than the disk it saves.
-    stale = ListingObservation.observed_at < cutoff
-    if protected:
-        stale = stale & ListingObservation.listing_id.notin_(protected)
+    unprotected = ~_is_protected(ListingObservation.listing_id)
+    stale = (ListingObservation.observed_at < cutoff) & unprotected
 
     observation_count = int(
         session.scalar(select(func.count(ListingObservation.id)).where(stale)) or 0
     )
 
-    # Listings that will have nothing left: every observation of them is stale.
-    surviving_listing_ids = select(ListingObservation.listing_id).where(~stale)
-    orphaned = select(Listing.item_id).where(Listing.item_id.notin_(surviving_listing_ids))
-    if protected:
-        orphaned = orphaned.where(Listing.item_id.notin_(protected))
-    orphan_ids = list(session.scalars(orphaned))
+    # A listing is orphaned when nothing that is being kept refers to it. Expressed
+    # against the state *after* the observation delete, so the plan and the delete
+    # describe the same thing.
+    has_surviving_observation = (
+        select(ListingObservation.id)
+        .where(ListingObservation.listing_id == Listing.item_id, ~stale)
+        .exists()
+    )
+    orphaned = ~has_surviving_observation & ~_is_protected(Listing.item_id)
+    listing_count = int(
+        session.scalar(select(func.count(Listing.item_id)).where(orphaned)) or 0
+    )
 
-    watched_count = len(set(session.scalars(select(Watch.listing_id))))
-    flagged_count = len(
-        set(session.scalars(select(Deal.listing_id).where(Deal.dismissed_at.is_(None))))
+    watched_count = int(
+        session.scalar(select(func.count(func.distinct(Watch.listing_id)))) or 0
+    )
+    flagged_count = int(
+        session.scalar(
+            select(func.count(func.distinct(Deal.listing_id))).where(
+                Deal.dismissed_at.is_(None)
+            )
+        )
+        or 0
     )
 
     plan = PrunePlan(
         cutoff=cutoff,
         observations=observation_count,
-        listings=len(orphan_ids),
+        listings=listing_count,
         protected_watched=watched_count,
         protected_flagged=flagged_count,
         dry_run=dry_run,
@@ -139,8 +172,18 @@ def prune(
         return plan
 
     session.execute(delete(ListingObservation).where(stale))
-    if orphan_ids:
-        session.execute(delete(Listing).where(Listing.item_id.in_(orphan_ids)))
+    # Re-derived here rather than reusing a list of ids read a moment ago: after the
+    # delete above, "has no observations left" is a question only the database can
+    # answer correctly, and answering it in Python opens the window this module's
+    # docstring is about.
+    session.execute(
+        delete(Listing).where(
+            ~select(ListingObservation.id)
+            .where(ListingObservation.listing_id == Listing.item_id)
+            .exists(),
+            ~_is_protected(Listing.item_id),
+        )
+    )
     session.flush()
     log.info("%s", plan.summary())
     return plan

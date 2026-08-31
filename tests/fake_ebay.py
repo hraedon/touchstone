@@ -91,6 +91,7 @@ class FakeEbay:
     index: int = 0
     token_mints: int = field(default=0, init=False)
     search_calls: int = field(default=0, init=False)
+    rate_limit_calls: int = field(default=0, init=False)
     _server: HTTPServer | None = field(default=None, init=False)
     _thread: threading.Thread | None = field(default=None, init=False)
 
@@ -132,6 +133,7 @@ class FakeEbay:
                 params = parse_qs(parsed.query)
 
                 if parsed.path == "/developer/analytics/v1_beta/rate_limit/":
+                    fake.rate_limit_calls += 1
                     if fake.rate_limit_fails or fake.rate_limit_remaining is None:
                         self._send(500, {"error": "rate limit unavailable"})
                         return

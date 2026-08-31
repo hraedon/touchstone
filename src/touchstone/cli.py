@@ -11,6 +11,7 @@ import argparse
 import logging
 import os
 import sys
+from contextlib import nullcontext
 from typing import assert_never
 
 from sqlalchemy import select
@@ -23,7 +24,7 @@ from touchstone.extract.llm import DEFAULT_MODEL, UmansExtractor
 from touchstone.extract.runner import run_extraction
 from touchstone.scan.retention import DEFAULT_RETENTION_DAYS, prune
 from touchstone.scan.runner import ScanSkipped, run_scan
-from touchstone.scan.schedule import run_tick, scanner_lock
+from touchstone.scan.schedule import run_tick, writer_lock
 
 log = logging.getLogger("touchstone")
 
@@ -130,8 +131,9 @@ def cmd_tick(args: argparse.Namespace) -> int:
     operation, not a failure, and a CronJob that reports failure for it would train
     an operator to ignore its alerts.
     """
-    factory = make_session_factory(make_engine())
-    with factory() as session, scanner_lock(session) as acquired:
+    engine = make_engine()
+    factory = make_session_factory(engine)
+    with writer_lock(engine) as acquired, factory() as session:
         if not acquired:
             print("another scanner pass holds the lock; nothing attempted")
             return 0
@@ -146,15 +148,30 @@ def cmd_tick(args: argparse.Namespace) -> int:
 
 
 def cmd_prune(args: argparse.Namespace) -> int:
-    """Drop old observations. Safe only because aggregates are never recomputed."""
-    factory = make_session_factory(make_engine())
-    with factory() as session:
-        try:
-            plan = prune(session, days=args.days, dry_run=not args.apply)
-        except ValueError as exc:
-            raise SystemExit(str(exc)) from exc
-        if args.apply:
-            session.commit()
+    """Drop old observations. Safe only because aggregates are never recomputed.
+
+    Takes the same writer lock the scanner takes, and only when actually deleting.
+    A prune that overlapped a scan could delete a listing the scan had just
+    re-observed; a dry run reads and changes nothing, so it never needs to wait.
+    """
+    engine = make_engine()
+    factory = make_session_factory(engine)
+    applying = bool(args.apply)
+
+    with writer_lock(engine) if applying else nullcontext(True) as acquired:
+        if not acquired:
+            print(
+                "a scanner pass holds the writer lock; nothing was deleted. "
+                "Retry when it finishes, or run without --apply to see the plan."
+            )
+            return 0
+        with factory() as session:
+            try:
+                plan = prune(session, days=args.days, dry_run=not applying)
+            except ValueError as exc:
+                raise SystemExit(str(exc)) from exc
+            if applying:
+                session.commit()
 
     print(plan.summary())
     if plan.dry_run:

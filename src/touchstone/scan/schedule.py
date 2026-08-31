@@ -26,7 +26,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select, text
+from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
 from touchstone.db.models import Query, ScanStatus
@@ -37,13 +37,13 @@ from touchstone.scan.runner import ScanSkipped, run_scan
 log = logging.getLogger("touchstone.schedule")
 
 # Arbitrary but fixed: a Postgres advisory lock key is a namespace agreed by
-# convention, and this is touchstone's scanner. Changing it silently disables the
+# convention, and this is touchstone's truth path. Changing it silently disables the
 # mutual exclusion, so it lives here with a name rather than inline as a number.
-SCANNER_LOCK_KEY = 0x70756C73  # "puls"
+WRITER_LOCK_KEY = 0x70756C73  # "puls"
 
 # Re-exported so a test can patch the name this module actually calls. Patching
 # ``touchstone.scan.runner.run_scan`` would not affect the reference bound here.
-__all__ = ["SCANNER_LOCK_KEY", "TickResult", "due_queries", "run_scan", "run_tick", "scanner_lock"]
+__all__ = ["WRITER_LOCK_KEY", "TickResult", "due_queries", "run_scan", "run_tick", "writer_lock"]
 
 
 def due_queries(session: Session, *, now: datetime | None = None) -> list[Query]:
@@ -83,25 +83,39 @@ def _aware(moment: datetime) -> datetime:
 
 
 @contextmanager
-def scanner_lock(session: Session) -> Iterator[bool]:
-    """Hold the cluster-wide scanner lock, or report that someone else has it.
+def writer_lock(engine: Engine) -> Iterator[bool]:
+    """Hold the cluster-wide lock on the truth path, or report who else has it.
 
-    Session-scoped rather than transaction-scoped, because a pass spans many
-    transactions. Released explicitly on the way out; a lost connection releases it
-    too, which is the behaviour we want if a pod is killed mid-pass.
+    Taken by both `touchstone tick` and `touchstone prune`: one writes observations
+    and the other deletes them, and a prune that overlaps a scan can delete a listing
+    the scan has just re-observed. Kubernetes' `concurrencyPolicy` cannot see either
+    of those cases, nor an operator running a command by hand.
+
+    **It opens its own connection on purpose.** A Postgres advisory lock is scoped to
+    the backend that took it, and a pass commits many times — each commit returns the
+    ORM session's connection to the pool, so the unlock could in principle run on a
+    different backend than the lock. That happens to be safe today only because the
+    CLI builds a fresh pool and never checks out two connections at once; a dedicated
+    connection makes it safe by construction instead of by luck.
+
+    A lost connection releases the lock server-side, which is the behaviour we want if
+    a pod is killed mid-pass.
     """
-    acquired = bool(
-        session.execute(
-            text("SELECT pg_try_advisory_lock(:key)"), {"key": SCANNER_LOCK_KEY}
-        ).scalar()
-    )
+    connection = engine.connect()
+    acquired = False
     try:
+        acquired = bool(
+            connection.exec_driver_sql(
+                "SELECT pg_try_advisory_lock(%(key)s)", {"key": WRITER_LOCK_KEY}
+            ).scalar()
+        )
         yield acquired
     finally:
         if acquired:
-            session.execute(
-                text("SELECT pg_advisory_unlock(:key)"), {"key": SCANNER_LOCK_KEY}
+            connection.exec_driver_sql(
+                "SELECT pg_advisory_unlock(%(key)s)", {"key": WRITER_LOCK_KEY}
             )
+        connection.close()
 
 
 @dataclass
@@ -174,16 +188,34 @@ def run_tick(
         except ScanSkipped as exc:
             # run_scan has already recorded the refusal against a scan row.
             session.commit()
+            guard.committed()
             result.skipped_budget += 1
             log.warning("query %s skipped: %s", query.name, exc)
             continue
         except Exception:
-            session.rollback()
             result.failed += 1
             log.exception("query %s failed; the pass continues", query.name)
+            # A failed scan still spent its calls, and run_scan recorded both the
+            # FAILED row and that spend in this transaction. Commit them: rolling
+            # back to tidy up would discard the accounting and leave the next pass
+            # believing it has allowance that is already gone.
+            try:
+                session.commit()
+                guard.committed()
+            except Exception:
+                session.rollback()
+                replayed = guard.replay_uncommitted()
+                session.commit()
+                log.error(
+                    "could not record the failed scan of %s; re-recorded %d spent "
+                    "call(s) against the ledger so the allowance is not overstated",
+                    query.name,
+                    replayed,
+                )
             continue
 
         session.commit()
+        guard.committed()
         result.scan_ids.append(outcome.scan_id)
         result.api_calls += outcome.api_calls
         if outcome.status is ScanStatus.COMPLETE:

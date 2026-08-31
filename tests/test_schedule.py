@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from tests.fake_ebay import FakeEbay, Generation, item
 from touchstone.db.models import Query, RateBudget, Scan, ScanStatus
-from touchstone.ebay.budget import today_utc
+from touchstone.ebay.budget import BudgetGuard, _Anchor, today_utc
 from touchstone.ebay.client import Credentials, EbayClient
 from touchstone.scan import schedule
 
@@ -235,52 +235,169 @@ class TestTick:
         assert "0 due" in result.summary()
 
 
-class TestScannerLock:
-    def test_a_second_holder_is_refused_and_the_first_keeps_it(
-        self, dsn: str
-    ) -> None:
-        """Two connections, because an advisory lock is per-session.
-
-        This is the whole point of the lock: a CronJob pass and an operator's manual
-        scan are different connections, and Kubernetes' concurrencyPolicy cannot see
-        the second one.
-        """
-        from sqlalchemy import create_engine
-        from sqlalchemy.orm import Session as RawSession
-
-        first_engine = create_engine(dsn, future=True)
-        second_engine = create_engine(dsn, future=True)
-        try:
-            with RawSession(first_engine) as first, RawSession(second_engine) as second:
-                with schedule.scanner_lock(first) as held:
-                    assert held is True
-                    with schedule.scanner_lock(second) as also_held:
-                        assert also_held is False
-                # Released: a fresh attempt now succeeds.
-                with schedule.scanner_lock(second) as after:
-                    assert after is True
-        finally:
-            first_engine.dispose()
-            second_engine.dispose()
-
-    def test_the_lock_is_released_even_when_the_body_raises(self, dsn: str) -> None:
-        from sqlalchemy import create_engine
-        from sqlalchemy.orm import Session as RawSession
-
-        engine_a = create_engine(dsn, future=True)
-        engine_b = create_engine(dsn, future=True)
-        try:
-            with RawSession(engine_a) as first, RawSession(engine_b) as second:
-                with pytest.raises(RuntimeError), schedule.scanner_lock(first) as held:
-                    assert held is True
-                    raise RuntimeError("boom")
-                with schedule.scanner_lock(second) as after:
-                    assert after is True, "a crashed pass must not wedge the scanner"
-        finally:
-            engine_a.dispose()
-            engine_b.dispose()
-
-
 def test_the_summary_names_the_lock_case() -> None:
     result = schedule.TickResult(lock_held_elsewhere=True)
     assert "holds the lock" in result.summary()
+
+
+class TestTheQuotaReadIsNotItselfExpensive:
+    """`state()` used to call eBay's getRateLimits every single time.
+
+    A pass calls it at least twice per query — once to decide whether to continue,
+    once inside run_scan's `check()` — so scanning forty queries made eighty
+    Developer Analytics calls, against a separate allowance, none of them recorded
+    anywhere. It was visible in the first production run: two getRateLimits requests
+    to scan one query.
+    """
+
+    def test_a_pass_over_several_queries_reads_the_quota_once(
+        self, session: Session
+    ) -> None:
+        for index in range(4):
+            make_query(session, f"q{index}", last_scanned_at=None)
+        fake = FakeEbay(
+            generations=[Generation(items=[item("v1|1|0", price=100.0)])],
+            rate_limit_remaining=5000,
+        )
+        url = fake.start()
+        try:
+            with EbayClient(credentials=Credentials("id", "secret"), base_url=url) as client:
+                result = schedule.run_tick(session, client, now=NOW)
+        finally:
+            fake.stop()
+
+        assert result.scanned == 4
+        assert fake.rate_limit_calls == 1, (
+            f"one authoritative read should serve the whole pass; made "
+            f"{fake.rate_limit_calls}"
+        )
+
+    def test_the_cached_figure_still_subtracts_what_the_pass_has_spent(
+        self, session: Session
+    ) -> None:
+        """Caching must not make the guard optimistic between reads."""
+        clock = iter([0.0] * 50)
+        guard = BudgetGuard(session, client=None, clock=lambda: next(clock))
+        session.add(RateBudget(day=today_utc(), calls_used=0, calls_limit=100))
+        session.flush()
+
+        guard._anchor = _Anchor(limit=100, remaining=100, at=0.0)
+        assert guard.state().remaining == 100
+        guard.record(30)
+        assert guard.state().remaining == 70, "spend since the anchor must be subtracted"
+
+    def test_the_anchor_expires(self, session: Session) -> None:
+        """Mutation guard: a cache that never refreshes is a stale figure forever."""
+        # The freshness check short-circuits on the first call (no anchor yet), so
+        # the ticks are: [anchor stamp, freshness check, new anchor stamp].
+        ticks = iter([0.0, 999.0, 999.0, 999.0])
+        fake = FakeEbay(
+            generations=[Generation(items=[])], rate_limit_remaining=4000
+        )
+        url = fake.start()
+        try:
+            with EbayClient(credentials=Credentials("id", "secret"), base_url=url) as client:
+                guard = BudgetGuard(session, client, clock=lambda: next(ticks))
+                guard.state()
+                guard.state()
+        finally:
+            fake.stop()
+        assert fake.rate_limit_calls == 2
+
+
+class TestSpendSurvivesAFailedScan:
+    def test_a_failed_scan_still_costs_its_calls_in_the_ledger(
+        self, session: Session, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """run_scan records the spend in the same transaction as the failure.
+
+        Rolling that back to recover the session would discard the accounting and
+        leave the next pass believing it has allowance that is already gone.
+        """
+        make_query(session, "doomed", last_scanned_at=None)
+
+        def fail_after_spending(
+            session_: Session, client: object, query: Query, *, budget: BudgetGuard
+        ) -> None:
+            budget.record(7)
+            raise RuntimeError("eBay returned something impossible")
+
+        monkeypatch.setattr(schedule, "run_scan", fail_after_spending)
+
+        fake = FakeEbay(
+            generations=[Generation(items=[])], rate_limit_remaining=None, rate_limit_fails=True
+        )
+        url = fake.start()
+        try:
+            with EbayClient(credentials=Credentials("id", "secret"), base_url=url) as client:
+                result = schedule.run_tick(session, client, now=NOW)
+        finally:
+            fake.stop()
+
+        assert result.failed == 1
+        row = session.get(RateBudget, today_utc())
+        assert row is not None
+        assert row.calls_used == 7, "the calls a failed scan spent are still spent"
+
+
+class TestWriterLock:
+    def test_a_second_holder_is_refused_and_the_first_keeps_it(self, dsn: str) -> None:
+        """Two engines, because an advisory lock belongs to one Postgres backend."""
+        from sqlalchemy import create_engine
+
+        first = create_engine(dsn, future=True)
+        second = create_engine(dsn, future=True)
+        try:
+            with schedule.writer_lock(first) as held:
+                assert held is True
+                with schedule.writer_lock(second) as also_held:
+                    assert also_held is False
+            with schedule.writer_lock(second) as after:
+                assert after is True
+        finally:
+            first.dispose()
+            second.dispose()
+
+    def test_the_lock_is_released_even_when_the_body_raises(self, dsn: str) -> None:
+        from sqlalchemy import create_engine
+
+        first = create_engine(dsn, future=True)
+        second = create_engine(dsn, future=True)
+        try:
+            with pytest.raises(RuntimeError), schedule.writer_lock(first) as held:
+                assert held is True
+                raise RuntimeError("boom")
+            with schedule.writer_lock(second) as after:
+                assert after is True, "a crashed pass must not wedge the writer"
+        finally:
+            first.dispose()
+            second.dispose()
+
+    def test_the_lock_survives_commits_on_a_pooled_session(self, dsn: str) -> None:
+        """The reason the lock takes its own connection.
+
+        A pass commits many times, and each commit returns the ORM session's
+        connection to the pool. If the lock rode that connection, the unlock could
+        land on a different backend than the lock.
+        """
+        from sqlalchemy import create_engine, text
+        from sqlalchemy.orm import close_all_sessions, sessionmaker
+
+        engine = create_engine(dsn, future=True)
+        other = create_engine(dsn, future=True)
+        factory = sessionmaker(bind=engine, future=True)
+        try:
+            with schedule.writer_lock(engine) as held:
+                assert held is True
+                for _ in range(3):
+                    with factory() as session:
+                        session.execute(text("SELECT 1"))
+                        session.commit()
+                with schedule.writer_lock(other) as intruder:
+                    assert intruder is False, "the lock must still be held"
+            with schedule.writer_lock(other) as after:
+                assert after is True
+        finally:
+            close_all_sessions()
+            engine.dispose()
+            other.dispose()

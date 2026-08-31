@@ -291,3 +291,111 @@ def test_the_cascade_this_module_is_avoiding_is_real(session: Session) -> None:
         if fk["referred_table"] == "scan"
     ]
     assert fk["options"].get("ondelete") == "CASCADE"
+
+
+class TestConcurrentChangesDuringAPrune:
+    """The hazard a code review named: prune runs weekly, the scanner every fifteen
+    minutes, so a prune routinely overlaps several scans.
+
+    An earlier version read the protected ids and the orphan ids into Python before
+    deleting. Anything that became protected, or was re-observed, in the window
+    between reading and deleting was still deleted — taking a brand-new observation
+    or an unexamined flag with it through the cascade.
+
+    The window is *inside* one ``prune()`` call, so these tests inject the change
+    there rather than between two calls: patching ``PrunePlan`` gives a deterministic
+    hook at exactly the moment the plan is finalised and before any DELETE runs. A
+    test that changed the database between two separate calls would pass against the
+    broken code, which is how this hazard would have survived review.
+    """
+
+    @staticmethod
+    def _inject(monkeypatch: pytest.MonkeyPatch, action: object) -> None:
+        real = retention.PrunePlan
+        fired = {"done": False}
+
+        def hook(**kwargs: object) -> object:
+            if not fired["done"]:
+                fired["done"] = True
+                action()  # type: ignore[operator]
+            return real(**kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(retention, "PrunePlan", hook)
+
+    def test_a_listing_re_observed_mid_prune_is_not_deleted(
+        self, session: Session, seeded: Query, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        assert retention.prune(session, days=365, dry_run=True, now=NOW).listings == 1, (
+            "the fixture must offer something to delete, or this test proves nothing"
+        )
+
+        def a_scanner_pass_lands() -> None:
+            scan = session.scalars(select(Scan).order_by(Scan.started_at.desc())).first()
+            assert scan is not None
+            session.add(
+                ListingObservation(
+                    listing_id="v1|old|0",
+                    scan_id=scan.id,
+                    observed_at=NOW,
+                    price=95.0,
+                    shipping_cost=5.0,
+                    total_cost=100.0,
+                    currency="USD",
+                )
+            )
+            session.flush()
+
+        self._inject(monkeypatch, a_scanner_pass_lands)
+        retention.prune(session, days=365, dry_run=False, now=NOW)
+        session.commit()
+
+        assert session.get(Listing, "v1|old|0") is not None, (
+            "a listing re-observed during the prune must survive it"
+        )
+        fresh = session.scalars(
+            select(ListingObservation).where(ListingObservation.observed_at == NOW)
+        ).all()
+        assert len(fresh) == 1, "and the new observation must survive with it"
+
+    def test_a_listing_pinned_mid_prune_is_not_deleted(
+        self, session: Session, seeded: Query, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def an_operator_pins_it() -> None:
+            session.add(Watch(listing_id="v1|old|0"))
+            session.flush()
+
+        self._inject(monkeypatch, an_operator_pins_it)
+        retention.prune(session, days=365, dry_run=False, now=NOW)
+        session.commit()
+
+        assert session.get(Listing, "v1|old|0") is not None
+        assert session.scalars(select(Watch)).first() is not None, (
+            "the cascade must not erase the pin that was just created"
+        )
+
+    def test_a_deal_flagged_mid_prune_protects_its_listing(
+        self, session: Session, seeded: Query, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def a_scan_flags_it() -> None:
+            scan = session.scalars(select(Scan).order_by(Scan.started_at)).first()
+            assert scan is not None
+            session.add(
+                Deal(
+                    listing_id="v1|old|0",
+                    scan_id=scan.id,
+                    cohort_key=COHORT,
+                    total_cost=105.0,
+                    per_gb=3.28,
+                    cohort_p10=3.5,
+                    cohort_n=17,
+                    score=1.4,
+                )
+            )
+            session.flush()
+
+        self._inject(monkeypatch, a_scan_flags_it)
+        retention.prune(session, days=365, dry_run=False, now=NOW)
+        session.commit()
+
+        assert session.get(Listing, "v1|old|0") is not None
+        assert session.scalars(select(Deal)).first() is not None

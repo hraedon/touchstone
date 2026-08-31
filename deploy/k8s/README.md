@@ -126,7 +126,14 @@ kubectl -n touchstone patch cronjob touchstone-prune -p '{"spec":{"suspend":fals
 
 Watched listings and undismissed deals are kept regardless of age, with their full
 observation history: both hold cascading foreign keys to `listing`, so pruning one
-would silently unpin a listing or erase a flag nobody had looked at yet.
+would silently unpin a listing or erase a flag nobody had looked at yet. Every one of
+those predicates is evaluated by the database at the moment of the delete, not read
+into memory beforehand — a weekly prune routinely overlaps several fifteen-minute
+scanner passes, and a listing re-observed or flagged mid-prune must survive it.
+
+`prune --apply` also takes the same writer lock the scanner takes, so the two cannot
+run at once at all. If a scan holds it, the prune reports so and deletes nothing; the
+next weekly run picks it up. A dry run reads only and never waits.
 
 ## Scanning
 
@@ -136,3 +143,8 @@ Postgres advisory lock stops it overlapping an operator running `touchstone scan
 hand — Kubernetes cannot see that second case. A pass that cannot take the lock exits
 0, because a skipped pass is normal operation and a job that reports failure for it
 would train you to ignore its alerts.
+
+The lock opens its own database connection rather than riding the scanner's session.
+A Postgres advisory lock belongs to the backend that took it, and a pass commits many
+times, returning that session's connection to the pool each time; a dedicated
+connection makes the lock correct by construction instead of by luck.

@@ -14,6 +14,8 @@ up until the application is throttled off the API for the rest of the day.
 from __future__ import annotations
 
 import logging
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -34,6 +36,20 @@ DEFAULT_DAILY_LIMIT = 5000
 # call limits during a burst.
 RESERVE = 100
 
+# How long one authoritative read from eBay stands before it is asked for again.
+#
+# This is not a performance tweak. `state()` used to call getRateLimits on *every*
+# invocation, and a scheduler pass calls `state()` at least twice per query — once to
+# decide whether to continue, once inside run_scan's `check()`. A pass over forty
+# queries therefore made eighty Developer Analytics calls, against a separate
+# allowance, none of which were recorded anywhere. Observed in production: two
+# getRateLimits calls to scan a single query.
+#
+# Within the window the figure stays honest by subtracting the calls we know we have
+# spent since the anchor was taken. That can only over-count our own spend, never
+# under-count it, so the guard stays conservative in the direction that matters.
+AUTHORITATIVE_TTL_SECONDS = 60.0
+
 
 class BudgetExhausted(RuntimeError):
     """Not enough remaining quota to run the requested work."""
@@ -41,6 +57,15 @@ class BudgetExhausted(RuntimeError):
 
 def today_utc() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%d")
+
+
+@dataclass(frozen=True)
+class _Anchor:
+    """The last figure eBay gave us, and when."""
+
+    limit: int
+    remaining: int
+    at: float
 
 
 @dataclass
@@ -58,9 +83,26 @@ class BudgetState:
 class BudgetGuard:
     """Reads quota from eBay when it can, from the local ledger when it cannot."""
 
-    def __init__(self, session: Session, client: EbayClient | None = None) -> None:
+    def __init__(
+        self,
+        session: Session,
+        client: EbayClient | None = None,
+        *,
+        authoritative_ttl_seconds: float = AUTHORITATIVE_TTL_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._session = session
         self._client = client
+        self._ttl = authoritative_ttl_seconds
+        self._clock = clock
+        self._anchor: _Anchor | None = None
+        # Calls spent since the anchor was taken. Held in memory as well as in the
+        # ledger so a rolled-back transaction cannot make the rest of this pass
+        # believe it has allowance it has already spent.
+        self._spent_since_anchor = 0
+        # Spend written to the ledger inside a transaction that has not been
+        # committed yet. See `committed()` and `replay_uncommitted()`.
+        self._uncommitted = 0
 
     def _ledger(self, day: str | None = None) -> RateBudget:
         day = day or today_utc()
@@ -75,9 +117,22 @@ class BudgetGuard:
         """Current budget. Authoritative when eBay answered, ledger-based otherwise."""
         row = self._ledger()
 
+        anchor = self._anchor
+        if anchor is not None and self._clock() - anchor.at < self._ttl:
+            # eBay's figure, minus what we have spent since it was taken.
+            return BudgetState(
+                remaining=max(0, anchor.remaining - self._spent_since_anchor),
+                limit=anchor.limit,
+                authoritative=True,
+            )
+
         if self._client is not None:
             limits = self._client.rate_limit()
             if limits is not None:
+                self._anchor = _Anchor(
+                    limit=limits.limit, remaining=limits.remaining, at=self._clock()
+                )
+                self._spent_since_anchor = 0
                 row.calls_limit = limits.limit
                 row.last_authoritative_read = utcnow()
                 row.last_authoritative_remaining = limits.remaining
@@ -122,12 +177,34 @@ class BudgetGuard:
             )
 
     def record(self, calls: int) -> None:
-        """Add spent calls to the ledger."""
+        """Add spent calls to the ledger, and to this guard's own accounting."""
         if calls <= 0:
             return
         row = self._ledger()
         row.calls_used += calls
         self._session.flush()
+        self._spent_since_anchor += calls
+        self._uncommitted += calls
+
+    def committed(self) -> None:
+        """Tell the guard the ledger write above reached the database."""
+        self._uncommitted = 0
+
+    def replay_uncommitted(self) -> int:
+        """Re-write spend whose transaction was rolled back, and report how much.
+
+        A failed scan still spent its calls. The ledger write recording that spend
+        lives in the same transaction as the failure, so rolling that transaction
+        back to recover the session also discards the accounting — leaving the next
+        process to believe it has allowance that is already gone. This puts it back.
+        """
+        pending, self._uncommitted = self._uncommitted, 0
+        if pending <= 0:
+            return 0
+        row = self._ledger()
+        row.calls_used += pending
+        self._session.flush()
+        return pending
 
 
 def recent_budgets(session: Session, days: int = 7) -> list[RateBudget]:
