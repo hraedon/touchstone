@@ -19,7 +19,7 @@ REQUIRED_SECRET_KEYS = {
 }
 RELEASE_IMAGE = (
     "ghcr.io/hraedon/touchstone@"
-    "sha256:0fb4820a0ea66bd7323f50983bbe20e6db5889da9536017ecbd6f9e241fa153c"
+    "sha256:734bd326063f908bc48310bcbfb48241a315ddaa381885ab0533050a5f1dea9e"
 )
 
 
