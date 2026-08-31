@@ -18,7 +18,7 @@ K8S = ROOT / "deploy" / "k8s"
 
 RELEASE_IMAGE = (
     "ghcr.io/hraedon/touchstone@"
-    "sha256:734bd326063f908bc48310bcbfb48241a315ddaa381885ab0533050a5f1dea9e"
+    "sha256:6bde0e8f177a308b9eebcc41bdcab0590678257ef8875c1a66034c7e919cce8a"
 )
 
 # Every value lives in exactly one Secret, and every workload gets only what it uses.
@@ -291,6 +291,28 @@ class TestScheduledWork:
             DB_SECRET,
             EXTRACT_SECRET,
         }
+
+    def test_a_missing_model_key_degrades_rather_than_stopping_extraction(self) -> None:
+        """`optional: true` is load-bearing, not laziness.
+
+        Without a key `run_extraction` uses the regex fast path and leaves the rest
+        unresolved. A required secretKeyRef would stop the pod starting instead,
+        which converts "no model available" into "extraction stopped running" — a
+        worse failure, and a silent one.
+        """
+        [container] = self._cronjob("cronjob-extractor.yaml")["spec"]["jobTemplate"]["spec"][
+            "template"
+        ]["spec"]["containers"]
+        [umans] = [e for e in container["env"] if e["name"] == "UMANS_API_KEY"]
+        assert umans["valueFrom"]["secretKeyRef"]["optional"] is True
+
+        # The database, by contrast, is not optional anywhere.
+        for name in ("cronjob-scanner.yaml", "cronjob-extractor.yaml", "cronjob-prune.yaml"):
+            [job_container] = self._cronjob(name)["spec"]["jobTemplate"]["spec"]["template"][
+                "spec"
+            ]["containers"]
+            [dsn] = [e for e in job_container["env"] if e["name"] == "TOUCHSTONE_DSN"]
+            assert "optional" not in dsn["valueFrom"]["secretKeyRef"]
 
     def test_the_pinned_extraction_model_is_not_a_lab_tier(self) -> None:
         """Config validation rejects a -lab id at startup; catch it before the pod."""

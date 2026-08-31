@@ -33,7 +33,7 @@ spec:
               type: RuntimeDefault
           containers:
             - name: extractor
-              image: ghcr.io/hraedon/touchstone@sha256:734bd326063f908bc48310bcbfb48241a315ddaa381885ab0533050a5f1dea9e
+              image: ghcr.io/hraedon/touchstone@sha256:6bde0e8f177a308b9eebcc41bdcab0590678257ef8875c1a66034c7e919cce8a
               imagePullPolicy: IfNotPresent
               command: ["touchstone", "extract"]
               env:
@@ -42,11 +42,21 @@ spec:
                     secretKeyRef:
                       name: touchstone-db-secrets
                       key: TOUCHSTONE_DSN
+                # Optional on purpose. Without a key the extractor runs the regex
+                # fast path only and leaves titles it cannot read confidently
+                # unresolved, which is exactly how the code is designed to degrade —
+                # a required ref would instead stop the pod starting at all, turning
+                # "no model available" into "extraction stopped running", which is a
+                # much worse failure and a silent one.
+                #
+                # touchstone gets its own credential when one exists; it must not be
+                # given the operator's interactive key.
                 - name: UMANS_API_KEY
                   valueFrom:
                     secretKeyRef:
                       name: touchstone-extract-secrets
                       key: UMANS_API_KEY
+                      optional: true
                 # Not a secret, and explicit rather than defaulted: a model id ending
                 # in -lab is rejected at startup, and the value in force should be
                 # readable from the manifest rather than from the code.

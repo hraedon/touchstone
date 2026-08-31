@@ -38,7 +38,7 @@ spec:
               type: RuntimeDefault
           containers:
             - name: scanner
-              image: ghcr.io/hraedon/touchstone@sha256:734bd326063f908bc48310bcbfb48241a315ddaa381885ab0533050a5f1dea9e
+              image: ghcr.io/hraedon/touchstone@sha256:6bde0e8f177a308b9eebcc41bdcab0590678257ef8875c1a66034c7e919cce8a
               imagePullPolicy: IfNotPresent
               command: ["touchstone", "tick"]
               env:
