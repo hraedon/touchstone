@@ -164,3 +164,84 @@ pages are rewritten. The migration that removed the seller columns carries a not
 it is ever applied to a database that really held seller values, follow it with
 `VACUUM FULL` and let the WAL rotate. It did not apply when written — touchstone had
 never connected to eBay, so no real seller value was ever stored.
+
+## The operator's seller exclusion list
+
+Added 2026-08-31. touchstone can be configured with a list of eBay usernames whose
+listings it will never retrieve. That is seller identifiers held in configuration, so
+it needs its reasoning written down rather than assumed.
+
+**The position: this list is held, and is not the kind of holding an erasure request
+addresses.** Four things distinguish it from the seller storage this project
+deliberately removed:
+
+1. **It was not derived from eBay.** The names are the operator's own judgement,
+   typed by hand. Nothing in touchstone adds to it, and nothing may: if the list ever
+   grew automatically from observed API data it would become a record *about* those
+   sellers derived from the marketplace, and this whole argument would collapse. That
+   boundary is the load-bearing one — protect it before anything else here.
+2. **It exists to prevent collection, not to enable it.** Every name is a seller
+   whose listings are never fetched, parsed, stored, aggregated, or scored. The list
+   is a shield against ingestion, not a product of it.
+3. **Erasing it would be perverse.** Deleting the list would cause touchstone to
+   resume collecting exactly the data the exclusion was there to avoid. This is the
+   ordinary suppression-list tension: to keep honouring "never show me this seller"
+   you have to remember the seller.
+4. **The name is the entire holding.** No feedback score, no listing, no observation,
+   no derived statistic, no timestamp of when they were added.
+
+Note what this argument is *not*. It is not a claim that the names fall outside the
+definition of personal data — for a sole trader they plainly do not. It is a claim
+that they are held for a purpose that erasure would defeat, which is a narrower and
+more honest position, and the one that survives being asked about.
+
+### What keeps it true
+
+The distinction only holds if the implementation matches it, and three of the four
+ways to break it are invisible in a diff:
+
+- **The list lives in the environment**, from a Kubernetes Secret
+  (`TOUCHSTONE_EXCLUDED_SELLERS`), never in the database. It is composed into the
+  Browse `filter` at call time so eBay excludes those sellers server-side — the
+  listings are never returned, never paged through, and never reach the database
+  layer at all.
+- **`Query.filter_expr` refuses seller filters.** It is a stored column passed to
+  eBay untouched, so `excludeSellers:` typed into it would persist usernames in
+  Postgres. The three seller-column tests cannot see that — they look for a column
+  named after a seller, and this arrives inside a general-purpose one. The UI and the
+  CLI both reject it now.
+- **No name reaches the logs.** httpx logs every request URL at INFO, and the filter
+  travels in the query string, so an unguarded implementation would write the whole
+  list into container logs on every scan — a second and far less controlled copy.
+  httpx's request logging is held at WARNING and the client emits its own line
+  describing the filter by shape (`<2206 chars, 100 seller exclusions>`) rather than
+  contents. Raising log level to DEBUG defeats this deliberately; do not do it in the
+  cluster.
+- **The recorded marker is keyed.** Changing the list changes which sellers are
+  sampled, so each scan records how many names were in force and a digest, and the
+  trend draws the discontinuity. The digest is an **HMAC** under a salt held beside
+  the list (`TOUCHSTONE_EXCLUSION_SALT`), not a plain hash. Over a list of one — an
+  ordinary state — a plain digest is exactly `sha256(username)`, confirmable against
+  a guess by anyone who can read the database. That would be a reversible
+  pseudonymised identifier stored in the very table this design says holds none, and
+  it would look safe while being so.
+
+### What we did not build, and why
+
+Pruning the list automatically when eBay sends a deletion notification was considered
+and rejected. eBay's `data.username` carries an immutable user id rather than a
+display username for U.S. users of affected developers, while `seller.username` in a
+Browse response is the display name — so matching notifications against the list
+would **silently match nothing** for a large share of them. The list would never
+shrink, the code would run green, and there would be no way to tell that apart from
+"nobody on the list has left". That is the same identifier-space mismatch documented
+above as reason 1 for dropping the seller columns; moving the data from a table to a
+Secret relocates the problem rather than solving it.
+
+It would also mean giving the sink — the one internet-facing component, which
+processes POSTs from outside before it can verify them — a ServiceAccount and write
+access to the cluster API, in exchange for a mechanism that may match nothing.
+
+If it is ever built, it must match all three notification fields (`username`,
+`userId`, `eiasToken`) **and record the match rate**, so that a mechanism which
+matches nothing says so instead of appearing to work.

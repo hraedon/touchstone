@@ -31,6 +31,22 @@ its signature checks begins a 30-day compliance clock.
 | `touchstone-sink-secrets` | `VERIFICATION_TOKEN`, `ENDPOINT_URL` | sink |
 | `touchstone-extract-secrets` | `UMANS_API_KEY` | extractor |
 | `touchstone-web-secrets` | `TOUCHSTONE_SECRET_KEY` | UI |
+| `touchstone-exclusions-secrets` | `TOUCHSTONE_EXCLUDED_SELLERS`, `TOUCHSTONE_EXCLUSION_SALT` | scanner only |
+
+**The seller exclusion list goes only to the scanner.** It is the operator's
+hand-authored list of usernames whose listings are never retrieved, applied in the
+Browse filter so eBay does the exclusion server-side. It is never stored in the
+database and never written to a log — see `docs/deletion-compliance.md` for the
+reasoning and for what keeps that true. `TOUCHSTONE_EXCLUSION_SALT` keys the per-scan
+digest so the database can show that the list *changed* without showing who is on it;
+the code refuses to compute an unkeyed digest, because over a one-name list that
+would be a reversible hash of that person's username.
+
+```bash
+kubectl -n touchstone create secret generic touchstone-exclusions-secrets \
+  --from-file=TOUCHSTONE_EXCLUDED_SELLERS=./sellers.txt \
+  --from-literal=TOUCHSTONE_EXCLUSION_SALT="$(openssl rand -hex 16)"
+```
 
 **The UI is deliberately not given the eBay keyset.** A page load must never spend
 from a 5,000-a-day allowance. That rule is enforced in code by an architecture test;

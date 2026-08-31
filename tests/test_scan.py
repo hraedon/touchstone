@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 from sqlalchemy.orm import Session
 
 from tests.fake_ebay import FakeEbay, Generation, item
@@ -551,3 +551,84 @@ class TestSellerFeedbackFloor:
         assert parsed is not None
         assert "1234" not in repr(parsed)
         assert not any("feedback" in f for f in type(parsed).__dataclass_fields__)
+
+
+class TestSellerExclusionsNeverTouchTheDatabase:
+    """The operator's exclusion list is applied at eBay, and only its shape is kept.
+
+    This is the whole compliance position in one place: the names go out in the
+    request, they never come back through the database layer, and what is recorded is
+    a count and a keyed marker that identifies the configuration rather than anyone
+    in it.
+    """
+
+    def test_the_list_is_applied_server_side_and_only_its_shape_recorded(
+        self, session: Session, make_query: MakeQuery, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from touchstone.ebay import exclusions
+
+        monkeypatch.setenv(exclusions.ENV_VAR, "badseller_one, badseller_two")
+        monkeypatch.setenv(exclusions.SALT_VAR, "0123456789abcdef")
+
+        fake = FakeEbay(generations=[Generation(items=[item("v1|1|0", price=100.0)])])
+        url = fake.start()
+        query = make_query()
+        try:
+            run(session, fake, query, url)
+        finally:
+            fake.stop()
+
+        # It reached eBay, so those listings are never returned, paged, or parsed.
+        assert fake.filters_seen
+        assert "excludeSellers:{badseller_one|badseller_two}" in fake.filters_seen[0]
+
+        scan = session.scalars(select(Scan)).one()
+        assert scan.excluded_sellers_count == 2
+        assert scan.excluded_sellers_digest
+
+        # And no name is anywhere in the database.
+        for table in ("scan", "query", "listing", "listing_observation"):
+            rows = session.execute(text(f"SELECT * FROM {table}")).mappings().all()
+            blob = " ".join(str(v) for row in rows for v in row.values()).lower()
+            assert "badseller" not in blob, f"a seller name reached {table}"
+
+    def test_an_operator_filter_survives_alongside_the_exclusions(
+        self, session: Session, make_query: MakeQuery, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from touchstone.ebay import exclusions
+
+        monkeypatch.setenv(exclusions.ENV_VAR, "badseller_one")
+        monkeypatch.setenv(exclusions.SALT_VAR, "0123456789abcdef")
+        fake = FakeEbay(generations=[Generation(items=[item("v1|1|0", price=100.0)])])
+        url = fake.start()
+        query = make_query()
+        query.filter_expr = "price:[10..500],priceCurrency:USD"
+        session.flush()
+        try:
+            run(session, fake, query, url)
+        finally:
+            fake.stop()
+
+        sent = fake.filters_seen[0]
+        assert "price:[10..500]" in sent
+        assert "excludeSellers:{badseller_one}" in sent
+
+    def test_no_list_means_no_clause_and_no_marker(
+        self, session: Session, make_query: MakeQuery, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Mutation guard: the clause must be caused by the list, not always present."""
+        from touchstone.ebay import exclusions
+
+        monkeypatch.delenv(exclusions.ENV_VAR, raising=False)
+        fake = FakeEbay(generations=[Generation(items=[item("v1|1|0", price=100.0)])])
+        url = fake.start()
+        query = make_query()
+        try:
+            run(session, fake, query, url)
+        finally:
+            fake.stop()
+
+        assert "excludeSellers" not in fake.filters_seen[0]
+        scan = session.scalars(select(Scan)).one()
+        assert scan.excluded_sellers_count == 0
+        assert scan.excluded_sellers_digest is None

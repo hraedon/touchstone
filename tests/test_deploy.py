@@ -27,6 +27,7 @@ EBAY_SECRET = "touchstone-ebay-secrets"
 SINK_SECRET = "touchstone-sink-secrets"
 EXTRACT_SECRET = "touchstone-extract-secrets"
 WEB_SECRET = "touchstone-web-secrets"
+EXCLUSIONS_SECRET = "touchstone-exclusions-secrets"
 
 TRACKED_MANIFESTS = {
     "namespace.yaml",
@@ -271,6 +272,11 @@ class TestScheduledWork:
             "TOUCHSTONE_DSN": (DB_SECRET, "TOUCHSTONE_DSN"),
             "EBAY_CLIENT_ID": (EBAY_SECRET, "EBAY_CLIENT_ID"),
             "EBAY_CLIENT_SECRET": (EBAY_SECRET, "EBAY_CLIENT_SECRET"),
+            "TOUCHSTONE_EXCLUDED_SELLERS": (
+                EXCLUSIONS_SECRET,
+                "TOUCHSTONE_EXCLUDED_SELLERS",
+            ),
+            "TOUCHSTONE_EXCLUSION_SALT": (EXCLUSIONS_SECRET, "TOUCHSTONE_EXCLUSION_SALT"),
         }
 
     def test_the_extractor_is_a_separate_job_from_the_scanner(self) -> None:
@@ -386,3 +392,32 @@ def test_no_secret_value_is_committed() -> None:
         text = (K8S / name).read_text(encoding="utf-8")
         assert "stringData" not in text
         assert "\ndata:" not in text
+
+
+def test_the_exclusion_list_goes_only_to_the_scanner() -> None:
+    """It is the one component that needs it.
+
+    The UI must never hold it — it must not be able to call eBay at all — and the
+    extractor and prune have no use for it. Both keys are optional, because no list
+    configured means excluding nobody, which is the correct degradation.
+    """
+    holders: list[str] = []
+    for name in TRACKED_MANIFESTS:
+        document = _manifest(name)
+        if document["kind"] == "Deployment":
+            spec = document["spec"]["template"]["spec"]
+        elif document["kind"] == "CronJob":
+            spec = document["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+        else:
+            continue
+        for container in spec.get("initContainers", []) + spec["containers"]:
+            refs = _secret_refs(container)
+            if "TOUCHSTONE_EXCLUDED_SELLERS" in refs:
+                holders.append(name)
+                assert "TOUCHSTONE_EXCLUSION_SALT" in refs, (
+                    f"{name} holds the list without the salt that keys its digest"
+                )
+                for key in ("TOUCHSTONE_EXCLUDED_SELLERS", "TOUCHSTONE_EXCLUSION_SALT"):
+                    entry = next(e for e in container["env"] if e["name"] == key)
+                    assert entry["valueFrom"]["secretKeyRef"]["optional"] is True
+    assert holders == ["cronjob-scanner.yaml"]

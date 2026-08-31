@@ -92,6 +92,7 @@ class FakeEbay:
     token_mints: int = field(default=0, init=False)
     search_calls: int = field(default=0, init=False)
     rate_limit_calls: int = field(default=0, init=False)
+    filters_seen: list[str] = field(default_factory=list, init=False)
     _server: HTTPServer | None = field(default=None, init=False)
     _thread: threading.Thread | None = field(default=None, init=False)
 
@@ -164,6 +165,7 @@ class FakeEbay:
                     return
 
                 if parsed.path == "/buy/browse/v1/item_summary/search":
+                    fake.filters_seen.append(params.get("filter", [""])[0])
                     fake.search_calls += 1
                     limit = int((params.get("limit") or ["200"])[0])
                     offset = int((params.get("offset") or ["0"])[0])

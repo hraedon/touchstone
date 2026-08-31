@@ -258,3 +258,78 @@ class TestAggregatesAreNeverRecomputed:
         assert "77.50" in before
         assert "77.50" in after
         assert "2.250" in after
+
+
+class TestSellerExclusionDiscontinuity:
+    """Changing who is excluded changes the sampled population.
+
+    Same class of artifact as the seller-feedback floor, and the same requirement:
+    an unmarked change is indistinguishable from a market move. What is drawn is that
+    the list changed and how big it was — never who was on it.
+    """
+
+    def test_a_changed_exclusion_list_is_drawn(self, harness: WebHarness) -> None:
+        session = harness.session
+        query = make_query(session, name="exclusions-changed")
+        history = ((0, 0, None), (24, 0, None), (48, 12, "abc123"), (72, 12, "abc123"))
+        for hour, count, dig in history:
+            scan = make_scan(
+                session, query, offset_hours=hour,
+                excluded_sellers_count=count, excluded_sellers_digest=dig,
+            )
+            make_aggregate(session, scan, n=11)
+        session.commit()
+
+        body = harness.client.get(f"/queries/{query.id}/trend").text
+        assert "Seller exclusion list changed" in body
+        assert "0 to 12 excluded" in body
+        assert 'class="rule"' in body
+
+    def test_the_marker_names_nobody(self, harness: WebHarness) -> None:
+        """The page must show that it changed, never who is on the list."""
+        session = harness.session
+        query = make_query(session, name="exclusions-private")
+        make_scan(session, query, offset_hours=0, excluded_sellers_count=0)
+        scan = make_scan(
+            session, query, offset_hours=24,
+            excluded_sellers_count=2, excluded_sellers_digest="d1e2f3",
+        )
+        make_aggregate(session, scan, n=11)
+        session.commit()
+
+        body = harness.client.get(f"/queries/{query.id}/trend").text
+        assert "Seller exclusion list changed" in body
+        assert "deliberately not recorded" in body
+
+    def test_an_unchanged_list_draws_nothing(self, harness: WebHarness) -> None:
+        """Mutation guard: the marker must be caused by the change."""
+        session = harness.session
+        query = make_query(session, name="exclusions-stable")
+        for hour in (0, 24, 48):
+            scan = make_scan(
+                session, query, offset_hours=hour,
+                excluded_sellers_count=5, excluded_sellers_digest="same",
+            )
+            make_aggregate(session, scan, n=11)
+        session.commit()
+
+        body = harness.client.get(f"/queries/{query.id}/trend").text
+        assert "Seller exclusion list changed" not in body
+
+    def test_a_same_size_but_different_list_is_still_a_change(
+        self, harness: WebHarness
+    ) -> None:
+        """Swapping one name for another changes the population without changing the
+        count — which is exactly why a digest is recorded and not just a number."""
+        session = harness.session
+        query = make_query(session, name="exclusions-swapped")
+        for hour, dig in ((0, "aaa"), (24, "bbb")):
+            scan = make_scan(
+                session, query, offset_hours=hour,
+                excluded_sellers_count=7, excluded_sellers_digest=dig,
+            )
+            make_aggregate(session, scan, n=11)
+        session.commit()
+
+        body = harness.client.get(f"/queries/{query.id}/trend").text
+        assert "Seller exclusion list changed" in body

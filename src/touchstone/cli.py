@@ -18,8 +18,9 @@ from sqlalchemy import select
 
 from touchstone.db.models import Deal, Query, Scan, ScanStatus
 from touchstone.db.session import make_engine, make_session_factory
+from touchstone.ebay import exclusions
 from touchstone.ebay.budget import BudgetGuard, recent_budgets
-from touchstone.ebay.client import Credentials, EbayClient
+from touchstone.ebay.client import Credentials, EbayClient, configure_logging
 from touchstone.extract.llm import DEFAULT_MODEL, UmansExtractor
 from touchstone.extract.runner import run_extraction
 from touchstone.scan.retention import DEFAULT_RETENTION_DAYS, prune
@@ -71,6 +72,10 @@ def cmd_queries_list(args: argparse.Namespace) -> int:
 
 
 def cmd_queries_add(args: argparse.Namespace) -> int:
+    try:
+        exclusions.reject_seller_filters(args.filter)
+    except exclusions.ExclusionListError as exc:
+        raise SystemExit(str(exc)) from exc
     factory = make_session_factory(make_engine())
     with factory() as session:
         query = Query(
@@ -334,10 +339,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(levelname)s %(name)s %(message)s",
-    )
+    configure_logging(verbose=args.verbose)
     result: int = args.func(args)
     return result
 

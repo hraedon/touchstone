@@ -30,6 +30,7 @@ from touchstone.db.models import (
     ScanAggregate,
     ScanStatus,
 )
+from touchstone.ebay import exclusions
 from touchstone.ebay.budget import BudgetGuard
 from touchstone.ebay.client import MAX_LIMIT, MAX_RESULT_SET, EbayClient, ParsedListing
 from touchstone.extract.cohort import CohortFields, cohort_key
@@ -260,6 +261,12 @@ def run_scan(
     """
     guard = budget if budget is not None else BudgetGuard(session, client)
 
+    # The operator's exclusion list, read from the environment at call time and never
+    # persisted. Applied server-side so eBay never returns these listings at all:
+    # they are not paged through, not parsed, and never reach the database layer.
+    excluded_sellers = exclusions.from_env()
+    effective_filter = exclusions.combine(query.filter_expr, excluded_sellers)
+
     wanted_pages = max(1, query.max_pages)
     allowed_pages = guard.check(wanted_pages)
     if allowed_pages <= 0:
@@ -307,7 +314,7 @@ def run_scan(
                 offset=offset,
                 limit=page_limit,
                 category_ids=query.category_ids,
-                filter_expr=query.filter_expr,
+                filter_expr=effective_filter,
                 min_seller_feedback=query.min_seller_feedback,
             )
             calls += 1
@@ -429,6 +436,8 @@ def run_scan(
         scan.result_count = len(seen)
         scan.capped = capped
         scan.min_seller_feedback = query.min_seller_feedback
+        scan.excluded_sellers_count = len(excluded_sellers)
+        scan.excluded_sellers_digest = exclusions.digest(excluded_sellers) or None
         scan.excluded_low_feedback = excluded
         query.last_scanned_at = observed_at
         query.scan_requested_at = None

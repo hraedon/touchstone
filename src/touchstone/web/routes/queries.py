@@ -16,6 +16,7 @@ from fastapi import APIRouter, Form, Request
 from sqlalchemy.exc import IntegrityError
 
 from touchstone.db.models import Query
+from touchstone.ebay import exclusions
 from touchstone.web import views
 from touchstone.web.routes._common import DbSession, flash, not_found, redirect, render
 
@@ -41,8 +42,16 @@ def _validate(
     cadence_minutes: int,
     max_pages: int,
     min_seller_feedback: int,
+    filter_expr: str = "",
 ) -> list[str]:
     problems: list[str] = []
+    try:
+        # A seller filter here would persist usernames: filter_expr is a stored
+        # column passed to eBay untouched. The seller-column tests cannot see it,
+        # because it arrives inside a general-purpose column.
+        exclusions.reject_seller_filters(filter_expr)
+    except exclusions.ExclusionListError as exc:
+        problems.append(str(exc))
     if not name.strip():
         problems.append("Name is required.")
     if not q.strip():
@@ -100,6 +109,7 @@ def query_create(
         cadence_minutes=cadence_minutes,
         max_pages=max_pages,
         min_seller_feedback=min_seller_feedback,
+        filter_expr=filter_expr,
     )
     if problems:
         return render(
@@ -162,6 +172,7 @@ def query_update(
         cadence_minutes=cadence_minutes,
         max_pages=max_pages,
         min_seller_feedback=min_seller_feedback,
+        filter_expr=filter_expr,
     )
     if problems:
         return render(

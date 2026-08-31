@@ -72,6 +72,7 @@ class DiscontinuityKind(enum.StrEnum):
 
     FEEDBACK_FLOOR = "feedback_floor"
     COHORT_KEY_FORMAT = "cohort_key_format"
+    SELLER_EXCLUSIONS = "seller_exclusions"
 
 
 def discontinuity_label(kind: DiscontinuityKind) -> str:
@@ -80,6 +81,8 @@ def discontinuity_label(kind: DiscontinuityKind) -> str:
             return "Seller-feedback floor changed"
         case DiscontinuityKind.COHORT_KEY_FORMAT:
             return "Cohort definition changed"
+        case DiscontinuityKind.SELLER_EXCLUSIONS:
+            return "Seller exclusion list changed"
         case _:
             assert_never(kind)
 
@@ -99,6 +102,13 @@ def discontinuity_detail(kind: DiscontinuityKind) -> str:
                 "before titles were read for capacity. Series either side of this "
                 "line describe differently-defined groups and do not continue one "
                 "another."
+            )
+        case DiscontinuityKind.SELLER_EXCLUSIONS:
+            return (
+                "The operator's list of excluded sellers changed here, so a different "
+                "set of listings was sampled from this point on. Who is on that list "
+                "is deliberately not recorded — only that it changed, and how many "
+                "names it held."
             )
         case _:
             assert_never(kind)
@@ -198,6 +208,8 @@ class ScanRow:
     api_calls: int
     capped: bool
     error: str | None
+    excluded_sellers_count: int = 0
+    excluded_sellers_digest: str | None = None
 
 
 @dataclass(frozen=True)
@@ -231,6 +243,8 @@ def _scan_rows(session: Session, query_id: int, limit: int = 200) -> list[ScanRo
             api_calls=scan.api_calls,
             capped=scan.capped,
             error=scan.error,
+            excluded_sellers_count=scan.excluded_sellers_count,
+            excluded_sellers_digest=scan.excluded_sellers_digest,
         )
         for scan in session.scalars(stmt)
     ]
@@ -259,6 +273,34 @@ def feedback_floor_discontinuities(scans: list[ScanRow]) -> list[Discontinuity]:
                 )
             )
         previous = scan.min_seller_feedback
+    return markers
+
+
+def seller_exclusion_discontinuities(scans: list[ScanRow]) -> list[Discontinuity]:
+    """One marker wherever the operator's exclusion list changed between scans.
+
+    Detected from the recorded digest, which identifies the configuration and not the
+    people in it. Same reasoning as the seller-feedback floor: changing who is
+    sampled makes the series discontinuous, and an unmarked change of that kind is
+    indistinguishable from the market moving.
+    """
+    ordered = sorted(
+        (scan for scan in scans if scan.status is ScanStatus.COMPLETE),
+        key=lambda scan: scan.started_at,
+    )
+    markers: list[Discontinuity] = []
+    previous: tuple[int, str | None] | None = None
+    for scan in ordered:
+        current = (scan.excluded_sellers_count, scan.excluded_sellers_digest)
+        if previous is not None and current != previous:
+            markers.append(
+                Discontinuity(
+                    at=scan.started_at,
+                    kind=DiscontinuityKind.SELLER_EXCLUSIONS,
+                    note=f"{previous[0]} to {current[0]} excluded",
+                )
+            )
+        previous = current
     return markers
 
 
@@ -343,8 +385,10 @@ def query_trend(
     series.sort(key=lambda s: (-s.latest.n, s.cohort_key))
 
     scans = _scan_rows(session, query_id)
-    discontinuities = feedback_floor_discontinuities(scans) + cohort_format_discontinuity(
-        series
+    discontinuities = (
+        feedback_floor_discontinuities(scans)
+        + seller_exclusion_discontinuities(scans)
+        + cohort_format_discontinuity(series)
     )
     discontinuities.sort(key=lambda marker: marker.at)
 
@@ -444,6 +488,8 @@ def query_rows(session: Session) -> list[QueryRow]:
                         api_calls=last.api_calls,
                         capped=last.capped,
                         error=last.error,
+                        excluded_sellers_count=last.excluded_sellers_count,
+                        excluded_sellers_digest=last.excluded_sellers_digest,
                     )
                 ),
                 scan_count=int(counts.get(query.id, 0)),
@@ -847,6 +893,8 @@ def overview(session: Session) -> Overview:
             api_calls=scan.api_calls,
             capped=scan.capped,
             error=scan.error,
+            excluded_sellers_count=scan.excluded_sellers_count,
+            excluded_sellers_digest=scan.excluded_sellers_digest,
         )
         for scan in session.scalars(
             select(Scan).order_by(Scan.started_at.desc()).limit(10)

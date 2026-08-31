@@ -29,6 +29,16 @@ resurrect. Three tests enforce it, including one that inspects the live schema. 
 you find yourself adding a seller column to enable a feature, read
 `docs/deletion-compliance.md` first: the feature is almost certainly not worth it.
 
+**The seller exclusion list is hand-authored and stays that way.** The operator may
+configure usernames to exclude (`TOUCHSTONE_EXCLUDED_SELLERS`, from a Secret, applied
+server-side at call time, never in the database). The reason it is defensible to hold
+is that it was not derived from eBay and exists to prevent collection. **Nothing in
+touchstone may add to it automatically** — an auto-populated blocklist would be a
+record about those sellers derived from marketplace data, and the argument in
+`docs/deletion-compliance.md` would collapse. Do not add a seller filter to
+`Query.filter_expr` either; it is a stored column, and the seller-column tests cannot
+see a username hidden inside a general-purpose one.
+
 **`scan_aggregate` is written once and never recomputed.** There must be no code path
 that regenerates it from `listing` rows. Retention pruning will eventually drop old
 listings, and derived statistics would silently rewrite every historical chart when

@@ -57,6 +57,26 @@ spec:
                     secretKeyRef:
                       name: touchstone-ebay-secrets
                       key: EBAY_CLIENT_SECRET
+                # The operator's hand-authored seller exclusion list, applied at eBay
+                # so those listings are never returned. Optional: with no list the
+                # scanner simply excludes nobody, which is the correct degradation.
+                # It is given ONLY to the scanner — nothing else needs it, and the UI
+                # must not have it.
+                - name: TOUCHSTONE_EXCLUDED_SELLERS
+                  valueFrom:
+                    secretKeyRef:
+                      name: touchstone-exclusions-secrets
+                      key: TOUCHSTONE_EXCLUDED_SELLERS
+                      optional: true
+                # Keys the per-scan digest so the database records that the list
+                # changed without recording who is on it. Required whenever the list
+                # above is set; the code refuses to compute an unkeyed digest.
+                - name: TOUCHSTONE_EXCLUSION_SALT
+                  valueFrom:
+                    secretKeyRef:
+                      name: touchstone-exclusions-secrets
+                      key: TOUCHSTONE_EXCLUSION_SALT
+                      optional: true
               securityContext:
                 allowPrivilegeEscalation: false
                 readOnlyRootFilesystem: true

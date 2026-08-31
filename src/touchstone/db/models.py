@@ -132,6 +132,13 @@ class Scan(Base):
     # How many listings that floor removed. A filter that silently eats most of a
     # result set is otherwise invisible: the numbers just look quieter.
     excluded_low_feedback: Mapped[int] = mapped_column(Integer, default=0)
+    # How many operator-excluded sellers were in force, and a digest of that list as
+    # a whole. Changing the list changes which sellers are sampled — the same kind of
+    # discontinuity as min_seller_feedback — so the trend must be able to draw it.
+    # The digest is over the whole list on purpose: a per-name hash would still
+    # identify one person and would be a worse thing to store than the name itself.
+    excluded_sellers_count: Mapped[int] = mapped_column(Integer, default=0)
+    excluded_sellers_digest: Mapped[str | None] = mapped_column(String(32))
     # eBay caps a result set at 10,000. A capped scan's "disappearances" are an
     # artifact of the window moving, not market events, so diffing is skipped.
     capped: Mapped[bool] = mapped_column(Boolean, default=False)

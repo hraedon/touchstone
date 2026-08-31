@@ -26,6 +26,38 @@ import httpx
 
 log = logging.getLogger("touchstone.ebay")
 
+
+def _describe_filter(filter_expr: str | None) -> str:
+    """A filter's shape, never its contents.
+
+    An exclusion list is a list of names; the useful operational facts are that one
+    was applied and how big it was, neither of which requires naming anyone.
+    """
+    if not filter_expr:
+        return "-"
+    excluded = filter_expr.count("|") + 1 if "excludeSellers:{" in filter_expr else 0
+    if excluded:
+        return f"<{len(filter_expr)} chars, {excluded} seller exclusions>"
+    return f"<{len(filter_expr)} chars>"
+
+
+def configure_logging(verbose: bool = False) -> None:
+    """Set up logging so no request URL reaches the log.
+
+    httpx logs every request line, including the full query string, at INFO. The
+    Browse filter travels in that query string and can carry the seller exclusion
+    list, so httpx's own logger is held at WARNING and the client emits its own
+    redacted line instead. Raising this to DEBUG for debugging will log URLs in full
+    — including any exclusion list — so do it deliberately and not in the cluster.
+    """
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.INFO,
+        format="%(levelname)s %(name)s %(message)s",
+    )
+    if not verbose:
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 PRODUCTION = "https://api.ebay.com"
 SCOPE = "https://api.ebay.com/oauth/api_scope"
 
@@ -299,6 +331,20 @@ class EbayClient:
         if filter_expr:
             params["filter"] = filter_expr
 
+        # Logged by us, with the filter reduced to its shape. httpx logs the whole
+        # request URL at INFO, and the filter can carry the operator's seller
+        # exclusion list — which would put those usernames into container logs on
+        # every scan, several times a day, retained by the cluster. That would be a
+        # second and far less controlled copy of the one thing we promise is held
+        # only in a Secret. `configure_logging` silences httpx's own line.
+        log.info(
+            "browse search: q=%r offset=%d limit=%d category=%s filter=%s",
+            q,
+            offset,
+            limit,
+            category_ids or "-",
+            _describe_filter(filter_expr),
+        )
         resp = self.http.get(
             f"{self.base_url}/buy/browse/v1/item_summary/search",
             params=params,

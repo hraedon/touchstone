@@ -39,6 +39,8 @@ def make_scan(
     capped: bool = False,
     status: ScanStatus = ScanStatus.COMPLETE,
     result_count: int = 40,
+    excluded_sellers_count: int = 0,
+    excluded_sellers_digest: str | None = None,
 ) -> Scan:
     scan = Scan(
         query_id=query.id,
@@ -49,6 +51,8 @@ def make_scan(
         api_calls=3,
         min_seller_feedback=min_seller_feedback,
         capped=capped,
+        excluded_sellers_count=excluded_sellers_count,
+        excluded_sellers_digest=excluded_sellers_digest,
     )
     session.add(scan)
     session.flush()
