@@ -85,6 +85,17 @@ spec:
                 secretKeyRef:
                   name: touchstone-ebay-secrets
                   key: EBAY_CLIENT_SECRET
+          # Keep serving for a few seconds after Kubernetes marks the pod for
+          # deletion. Endpoint removal and container shutdown race: the ingress
+          # controller learns about the termination asynchronously, so without this
+          # a rolling update briefly routes to a pod that has already stopped
+          # listening. Observed during the Plan 004 rollout as a Bad Gateway on the
+          # sink's external route — brief, and eBay retries, but the callback going
+          # 502 is not something to leave to luck on a compliance endpoint.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

@@ -83,6 +83,21 @@ docker buildx imagetools inspect ghcr.io/hraedon/touchstone:main \
   --format '{{ .Manifest.Digest }}'
 ```
 
+## Rolling without a gap
+
+Both served Deployments drain for five seconds before their container stops. Endpoint
+removal and container shutdown race: the ingress controller learns about a
+terminating pod asynchronously, so a pod that stops listening the moment it is marked
+for deletion still receives traffic for an instant. This was observed for real during
+the Plan 004 rollout — a `Bad Gateway` on `ebdel.hraedon.com`, which is the eBay
+callback. Brief, and eBay retries, but not something to leave to luck on a
+compliance endpoint.
+
+`maxUnavailable: 0` is what guarantees a ready pod exists throughout; the drain is
+what guarantees the *old* one keeps answering until the router has stopped sending to
+it. Both are needed, and a test asserts the drain is shorter than the grace period so
+the kill does not land in the middle of it.
+
 ## Rotating the database credential
 
 Replacing a Secret does **not** update the environment of a running pod. Rotate in

@@ -346,6 +346,26 @@ class TestScheduledWork:
             assert "prune" not in container["command"]
 
 
+def test_every_served_workload_drains_before_it_stops_listening() -> None:
+    """Endpoint removal and container shutdown race.
+
+    The ingress controller learns about a terminating pod asynchronously, so a pod
+    that stops listening the instant it is marked for deletion gets traffic routed
+    to it for a moment longer. Seen for real during the Plan 004 rollout: a Bad
+    Gateway on the sink's external route, which is the eBay callback.
+    """
+    for name in ("deployment.yaml", "deployment-web.yaml"):
+        [container] = _manifest(name)["spec"]["template"]["spec"]["containers"]
+        pre_stop = container["lifecycle"]["preStop"]["exec"]["command"]
+        assert pre_stop[0] == "sleep"
+        assert int(pre_stop[1]) >= 3, f"{name} drains too briefly to matter"
+        grace = _manifest(name)["spec"]["template"]["spec"]["terminationGracePeriodSeconds"]
+        assert grace > int(pre_stop[1]), (
+            f"{name}: the grace period must outlast the drain, or the kill lands "
+            "in the middle of it"
+        )
+
+
 def test_the_namespace_pins_the_cluster_pod_security_version() -> None:
     namespace = _manifest("namespace.yaml")
     assert namespace["metadata"]["labels"] == {
