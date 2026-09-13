@@ -20,7 +20,22 @@ from touchstone.db.models import (
     ScanStatus,
 )
 
-BASE_TIME = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
+# Anchored to the run, not to the calendar. This was an absolute date
+# (2026-08-01), and every trend view filters to a trailing window — 30 days by
+# default. Thirty days after that date the seeded scans fell out of the window,
+# the views correctly reported "No aggregates recorded", and ten assertions
+# began failing. On the calendar, not on a commit: the last green CI run was
+# 2026-08-31 08:39 UTC and the fixture aged out at 12:00 UTC the same day, so
+# the suite went red three hours later with nothing to blame it on. It stayed
+# red and unnoticed for a fortnight, because no run happened in between, and
+# then blamed an unrelated pull request for it.
+#
+# Seven days back keeps every offset used here (up to +48h) comfortably in the
+# past and comfortably inside the shortest window the views offer. Truncated to
+# the hour so a single run still sees one stable value.
+BASE_TIME = (datetime.now(UTC) - timedelta(days=7)).replace(
+    minute=0, second=0, microsecond=0
+)
 
 
 def make_query(session: Session, name: str = "ddr4-rdimm", **kwargs: object) -> Query:
