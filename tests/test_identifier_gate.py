@@ -536,6 +536,120 @@ def test_declaration_without_a_publication_table_fails(
     assert gate.main([]) == 1
 
 
+# --- Visibility normalisation -------------------------------------------------
+#
+# These pin the declaration surface in BOTH directions. Before them, three
+# mutations survived the suite: dropping .strip(), treating a missing key as
+# public, and accepting uppercase. All three change whether a public repo's gate
+# arms at all, and none of them made a test go red -- so the fail-open behaviour
+# they describe was not just wrong, nothing would have noticed it being fixed or
+# worsened. A declaration shape that is not exactly the lowercase word is the
+# realistic case: the publication-review commit that flips visibility to public
+# is precisely where a case typo or a dropped line lands.
+
+
+@pytest.mark.parametrize("spelling", ["Public", "PUBLIC", "  public  ", "PuBlIc"])
+def test_public_is_recognised_whatever_its_case_or_padding(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, spelling: str
+) -> None:
+    """Any casing of "public" must still arm the gate.
+
+    Recognising only the exact lowercase string sent every other spelling to the
+    fail-OPEN branch, which silently disarmed the gate on a public repo.
+    """
+    (repo / "publication.toml").write_text(
+        f'[publication]\nremote_owner = "someone"\nvisibility = "{spelling}"\n',
+        encoding="utf-8",
+    )
+    _track(repo, "README.md", "hello\n")
+    _commit(repo, "declare public")
+    monkeypatch.delenv("TOUCHSTONE_FORBIDDEN_IDENTIFIERS", raising=False)
+    assert gate.main([]) == 1
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '[publication]\nremote_owner = "someone"\n',  # visibility key absent
+        '[publication]\nvisibility = ""\n',  # empty string
+        "[publication]\nvisibility = true\n",  # not a string
+        "[publication]\nvisibility = 1\n",  # not a string
+        '[publication]\nvisibility = "publik"\n',  # typo
+        '[publication]\nvisibility = "internal"\n',  # not in the closed set
+    ],
+)
+def test_unrecognised_visibility_fails_rather_than_guessing(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, body: str
+) -> None:
+    """A declaration that opted in but names an unknown visibility is an error.
+
+    Quietly reading it as "not public" is the coin-flip the declaration exists to
+    remove, and it resolves in the unsafe direction: the gate no-ops and CI is
+    green having scanned nothing.
+    """
+    (repo / "publication.toml").write_text(body, encoding="utf-8")
+    _track(repo, "README.md", "hello\n")
+    _commit(repo, "declare")
+    monkeypatch.delenv("TOUCHSTONE_FORBIDDEN_IDENTIFIERS", raising=False)
+    assert gate.main([]) == 1
+
+
+@pytest.mark.parametrize(
+    "spelling", ["PRIVATE-UNTIL-REVIEW", "Private-Until-Review", "  private-until-review  "]
+)
+def test_private_until_review_is_recognised_whatever_its_case_or_padding(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, spelling: str
+) -> None:
+    """The normalisation must work on the private side too, not only the public one.
+
+    Without this, dropping .casefold() or .strip() looks harmless: every public
+    spelling still exits 1, just as a GateError instead of a recognised public.
+    The mutation only shows up here, where over-strictness turns a repo that must
+    stay clonable into a hard block.
+    """
+    (repo / "publication.toml").write_text(
+        f'[publication]\nremote_owner = "someone"\nvisibility = "{spelling}"\n',
+        encoding="utf-8",
+    )
+    _track(repo, "README.md", "hello\n")
+    _commit(repo, "declare private")
+    monkeypatch.delenv("TOUCHSTONE_FORBIDDEN_IDENTIFIERS", raising=False)
+    assert gate.main([]) == 0
+
+
+def test_oddly_cased_public_is_scanned_rather_than_merely_erroring(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A recognised public repo with a working denylist scans and passes clean.
+
+    This separates "recognised as public, scanned, nothing found" from "could not
+    read the declaration at all". Both exit 1 when the denylist is missing, so the
+    public-side tests alone cannot tell a working normalisation from a broken one.
+    """
+    (repo / "publication.toml").write_text(
+        '[publication]\nremote_owner = "someone"\nvisibility = "Public"\n',
+        encoding="utf-8",
+    )
+    _track(repo, "README.md", "nothing forbidden here\n")
+    _commit(repo, "declare public")
+    monkeypatch.setenv("TOUCHSTONE_FORBIDDEN_IDENTIFIERS", "zzzsynthetictoken")
+    assert gate.main([]) == 0
+
+
+def test_private_until_review_still_no_ops_without_a_denylist(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other direction: tightening public must not block a private repo.
+
+    Without this, a fix that made everything fail closed would look correct.
+    """
+    _declare(repo, "private-until-review")
+    _track(repo, "publication.toml", (repo / "publication.toml").read_text())
+    _commit(repo, "declare private")
+    monkeypatch.delenv("TOUCHSTONE_FORBIDDEN_IDENTIFIERS", raising=False)
+    assert gate.main([]) == 0
+
+
 def test_configured_gate_catches_an_identifier_in_a_tracked_file(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
