@@ -6,7 +6,10 @@ identity, at this visibility" — the plumbing accident class:
 
 * pushing a private-until-review repo to a public remote;
 * pushing with the wrong author identity on a multi-identity box;
-* pushing to a remote owned by someone other than the declared owner.
+* pushing to a remote owned by someone other than the declared owner;
+* pushing to a Git host other than github.com — the owner check is meaningless
+  unless the HOST is validated too, since any host can serve an owner-named
+  path (WI-030).
 
 Content and plumbing guards overlap but neither subsumes the other. A repository
 was recreated twice for content leaks whose *plumbing* was fine, and separately
@@ -38,8 +41,89 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import assert_never
+from urllib.parse import urlsplit
 
 DECLARATION_FILENAME = "publication.toml"
+
+# Hosts a publication push may go to. Deliberately hardcoded rather than
+# declared in publication.toml: the declaration states which owner/identity/
+# visibility are expected ON GitHub, and widening the host set is a policy
+# change that belongs in this reviewed script, not in per-repo config where it
+# would be one quiet edit away from re-opening WI-030. Exact match only — no
+# subdomains — so api.github.com, gist.github.com, and ssh.github.com (the
+# port-443 alternate) are refused along with github.com.evil.example.
+_ALLOWED_HOSTS = frozenset({"github.com"})
+
+# scp-like remote: [user@]host:path — the form `git@github.com:owner/repo.git`.
+# Host may not contain `@`, `:` or `/`; anything fancier (IPv6 literals, ports)
+# is an unrecognized shape and refused.
+_SCP_RE = re.compile(r"^(?:[^@:/]+@)?(?P<host>[^@:/]+):(?P<path>[^:]*)$")
+
+
+@dataclass(frozen=True)
+class RemoteRef:
+    """A parsed push URL: which host, which owner, which repository."""
+
+    host: str  # lowercased
+    owner: str
+    repo: str
+
+
+def _split_owner_repo(path: str) -> tuple[str, str] | None:
+    """Split a URL path into (owner, repo), or None unless it is exactly that.
+
+    Strict: after trimming slashes and a ``.git`` suffix there must be exactly
+    two non-empty segments. Deeper paths (subgroups, API routes) are not GitHub
+    repository paths and must not be squeezed into an owner/repo reading.
+    """
+    path = path.strip("/")
+    path = path.removesuffix(".git")
+    segments = path.split("/")
+    if len(segments) != 2 or not all(segments):
+        return None
+    return segments[0], segments[1]
+
+
+def parse_remote_url(url: str) -> RemoteRef | None:
+    """Parse an https/ssh/scp-form remote into host + owner + repo.
+
+    The host is parsed EXPLICITLY, never inferred: the previous parser regexed
+    only the final two path segments, so an owner-named remote on an arbitrary
+    host — ``https://attacker.example/<owner>/repo.git`` — sailed through the
+    owner check (WI-030). Callers must check the host against _ALLOWED_HOSTS;
+    the compatibility wrappers below do so themselves.
+
+    Strict by design, refusing (None) rather than guessing on: schemes other
+    than https/ssh (git:// is unauthenticated, http:// is plaintext), an
+    explicit port, an empty or unparseable host, and any path that is not
+    exactly ``owner/repo``. Userinfo (``token@github.com``) is stripped, as a
+    real credentialed HTTPS remote carries it.
+    """
+    url = url.strip()
+    if "://" in url:
+        parts = urlsplit(url)
+        if parts.scheme not in {"https", "ssh"}:
+            return None
+        try:
+            host = parts.hostname
+            port = parts.port
+        except ValueError:  # unparseable netloc (bad port, bad IPv6 literal)
+            return None
+        if not host or port is not None:
+            return None
+        owner_repo = _split_owner_repo(parts.path)
+        if owner_repo is None:
+            return None
+        return RemoteRef(host=host.lower(), owner=owner_repo[0], repo=owner_repo[1])
+    match = _SCP_RE.match(url)
+    if match is None:
+        return None
+    owner_repo = _split_owner_repo(match.group("path"))
+    if owner_repo is None:
+        return None
+    return RemoteRef(
+        host=match.group("host").lower(), owner=owner_repo[0], repo=owner_repo[1]
+    )
 
 
 class Visibility(StrEnum):
@@ -123,19 +207,18 @@ def load_declaration(repo_root: Path) -> Declaration | None:
 
 
 def parse_remote_owner(url: str) -> str | None:
-    """Extract the owner from an https or ssh GitHub remote URL.
+    """Extract the owner from an https or ssh github.com remote URL.
 
-    Returns None when the URL shape is unrecognized; the caller treats that as a
-    refusal rather than a pass, because an unparseable remote is exactly the case
-    where a guard must not guess.
+    Returns None when the URL shape is unrecognized OR the host is not an
+    allowed publication host; the caller treats None as a refusal rather than a
+    pass. The host condition is load-bearing (WI-030): this script is copied
+    across the estate and some callers use this function directly, so the owner
+    of a non-GitHub remote must never satisfy an owner check anywhere.
     """
-    url = url.strip()
-    # git@host:owner/repo.git  |  ssh://git@host/owner/repo.git
-    # https://host/owner/repo(.git)
-    match = re.search(r"[:/]([^/:]+)/([^/]+?)(?:\.git)?/?$", url)
-    if not match:
+    remote = parse_remote_url(url)
+    if remote is None or remote.host not in _ALLOWED_HOSTS:
         return None
-    return match.group(1)
+    return remote.owner
 
 
 def _resolve_exe(name: str) -> str:
@@ -210,10 +293,12 @@ def remote_visibility(owner: str, repo: str) -> str | None:
 
 
 def parse_remote_repo(url: str) -> str | None:
-    match = re.search(r"[:/]([^/:]+)/([^/]+?)(?:\.git)?/?$", url.strip())
-    if not match:
+    """Repository name from a github.com remote URL; None otherwise (see
+    parse_remote_owner for why a wrong host must yield None, not a name)."""
+    remote = parse_remote_url(url)
+    if remote is None or remote.host not in _ALLOWED_HOSTS:
         return None
-    return match.group(2)
+    return remote.repo
 
 
 def check(
@@ -233,15 +318,22 @@ def check(
 
     problems: list[str] = []
 
-    owner = parse_remote_owner(remote_url)
-    if owner is None:
+    remote = parse_remote_url(remote_url)
+    if remote is None:
         problems.append(
             f"could not parse an owner from the push URL {remote_url!r}; refusing rather "
             f"than guessing. Expected a GitHub https or ssh remote."
         )
-    elif owner.lower() != declaration.remote_owner.lower():
+    elif remote.host not in _ALLOWED_HOSTS:
+        allowed_hosts = ", ".join(sorted(_ALLOWED_HOSTS))
         problems.append(
-            f"remote owner mismatch: pushing to {owner!r} but {DECLARATION_FILENAME} "
+            f"remote host mismatch: pushing to {remote.host!r} but this guard only "
+            f"clears pushes to {allowed_hosts}. An owner-matching path on another host is "
+            f"not the declared remote (WI-030)."
+        )
+    elif remote.owner.lower() != declaration.remote_owner.lower():
+        problems.append(
+            f"remote owner mismatch: pushing to {remote.owner!r} but {DECLARATION_FILENAME} "
             f"declares {declaration.remote_owner!r}. If the new remote is intended, "
             f"update the declaration in the same commit."
         )
@@ -260,8 +352,11 @@ def check(
 
     match declaration.visibility:
         case Visibility.PRIVATE_UNTIL_REVIEW:
-            repo_name = parse_remote_repo(remote_url)
-            actual = remote_visibility(owner, repo_name) if owner and repo_name else None
+            # Only a validated github.com remote gets a gh lookup: querying
+            # gh about a path parsed off a foreign host would answer for the
+            # wrong repository entirely.
+            verified = remote if remote and remote.host in _ALLOWED_HOSTS else None
+            actual = remote_visibility(verified.owner, verified.repo) if verified else None
             if actual is None:
                 print(
                     "publication plumbing guard: could not verify remote visibility "

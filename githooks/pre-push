@@ -29,9 +29,22 @@ remote_url="${2:-}"
 repo_root="$(git rev-parse --show-toplevel)"
 
 python_bin="$repo_root/.venv/bin/python"
-[ -x "$python_bin" ] || python_bin="$(command -v python3 || command -v python)"
+if [ ! -x "$python_bin" ]; then
+  python_bin="$(command -v python3 || command -v python || true)"
+fi
+if [ -z "${python_bin:-}" ] || [ ! -x "$python_bin" ]; then
+  echo "touchstone pre-push: FATAL — no Python interpreter found." >&2
+  echo "  Checked: $repo_root/.venv/bin/python, python3, python" >&2
+  echo "  Install Python or create a venv (uv venv && uv sync)." >&2
+  exit 1
+fi
 
 # Resolve the denylist once (same order as pre-commit; see that hook).
+#
+# The "agent-suite" in the ~/.config path below is the shared config DIRECTORY --
+# one canonical denylist for every repo -- not a project name. A templatising
+# pass that treated it as one rewrote it to ~/.config/<repo>/, which exists
+# nowhere, and every hook then announced itself INACTIVE while looking installed.
 if [ -z "${TOUCHSTONE_FORBIDDEN_IDENTIFIERS:-}" ]; then
   for candidate in \
     "$repo_root/.identifiers-denylist.local" \
@@ -68,8 +81,16 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   # published rather than a diff against a commit that no longer exists.
   if [ "$remote_sha" = "$zero_sha" ] \
      || ! git cat-file -e "${remote_sha}^{commit}" 2>/dev/null; then
-    # Passed as one string; the Python side splits it into git log arguments.
-    rev_range="$local_sha --not --remotes=$remote_name"
+    # New branch or rewritten history. Build the exclusion range honestly:
+    # --remotes=<name> is only valid when <name> is a configured remote (git
+    # push <URL> passes the URL as argv[1], which is NOT a remote name and
+    # would make --remotes= match nothing). When the name is not a configured
+    # remote, conservatively scan all commits reachable from local_sha.
+    if git remote get-url "$remote_name" >/dev/null 2>&1; then
+      rev_range="$local_sha --not --remotes=$remote_name"
+    else
+      rev_range="$local_sha"
+    fi
   else
     rev_range="$remote_sha..$local_sha"
   fi
