@@ -61,11 +61,13 @@ MIN_IDENTIFIER_LENGTH = 4
 # matches all of those forms; see _phrase_pattern.
 _PHRASE_SEPARATOR = r"[\s._\-]+"
 _BINARY_SNIFF_LEN = 8192
-# Dirs skipped by the identifier scan: .venv is build output. The always-on
-# guard below handles root-level samples/ (which holds real identifier-bearing
-# data); nested directories named samples/ (e.g. tests/samples/) are legitimate
-# code dirs and SHOULD be scanned.
-_SKIP_DIRS = frozenset({".venv"})
+# Nothing is skipped by PATH. What is scanned is decided by git tracked-ness:
+# every tracked (or staged) file is scanned. .venv used to be skipped as build
+# output, which let a force-added token file under it pass; a tracked file under
+# any .venv/ is now refused outright (leaked_tracked_files). Nested directories
+# named samples/ (e.g. tests/samples/) are legitimate code dirs and ARE scanned;
+# only the root-level guarded dirs below are refused.
+_VENV_DIR = ".venv"
 # Root-level gitignored data dirs that must never contain a tracked file. The
 # guard matches the first path component so a legitimate nested code dir named
 # ``samples`` (e.g. ``tests/samples/``) is not a false positive.
@@ -387,9 +389,9 @@ def _read_staged_blob(path: Path) -> bytes:
 def _paths_from_git(args: list[str]) -> list[Path]:
     """Run a NUL-delimited git path command and return Paths.
 
-    No filtering is applied here — the always-on samples/ guard needs to see
-    every tracked path so it can detect a force-add. The identifier scan
-    filters out _SKIP_DIRS separately.
+    No filtering is applied here or later: the always-on guards need to see every
+    tracked path so they can detect a force-add, and the identifier scan reads
+    every tracked path (no path-based skip).
     """
     paths: list[Path] = []
     for raw in _run_git(args).split("\0"):
@@ -519,7 +521,10 @@ def leaked_tracked_files(paths: list[Path], guarded: frozenset[str]) -> list[Pat
       nested code directory named ``samples`` (e.g. ``tests/samples/``) is not a
       false positive;
     * a **root-level ``.env``** or ``.env.<something>``, except the deliberately
-      tracked ``.env.example``.
+      tracked ``.env.example``;
+    * anything under a **``.venv/``** directory at any depth -- a virtualenv is
+      never source, and it used to be skipped by the scan, so a force-added file
+      there was the one tracked path nothing read.
     """
     leaked: list[Path] = []
     for path in paths:
@@ -527,6 +532,9 @@ def leaked_tracked_files(paths: list[Path], guarded: frozenset[str]) -> list[Pat
             path.name.startswith(".") and _VIM_COLLISION_SUFFIX.fullmatch(path.suffix)
         )
         if path.suffix in _EDITOR_SWAP_SUFFIXES or is_vim_collision:
+            leaked.append(path)
+            continue
+        if _VENV_DIR in path.parts[:-1]:
             leaked.append(path)
             continue
         if path.parts and path.parts[0] in guarded:
@@ -1048,7 +1056,8 @@ def _run(args: argparse.Namespace) -> int:
             "\nThese are gitignored by convention, and .gitignore is advisory — "
             "git add -f walks straight past it. A guarded data directory holds "
             "real identifier-bearing data (hostnames, service accounts, principal "
-            "handles); an editor swap file holds the BUFFER of the file being "
+            "handles); anything under .venv/ is never source; an editor swap "
+            "file holds the BUFFER of the file being "
             "edited, secrets typed but not yet saved included; a root-level .env "
             "holds credentials (.env.example is the exempt template).\n\n"
             "Remove them from the index: git rm --cached -r <path>.",
@@ -1067,7 +1076,7 @@ def _run(args: argparse.Namespace) -> int:
     if identifiers is None:
         return 0
 
-    scan_paths = [p for p in paths if not any(part in _SKIP_DIRS for part in p.parts)]
+    scan_paths = paths  # tracked-ness decides; no path-based skip (see _VENV_DIR)
     unreadable: list[Path] = []
     # --staged judges the index blobs (what the commit records), never the
     # worktree; the CI default scans the checked-out tracked tree (WI-031).
