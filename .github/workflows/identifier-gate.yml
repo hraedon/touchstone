@@ -37,19 +37,11 @@ jobs:
         env:
           TOUCHSTONE_FORBIDDEN_IDENTIFIERS: ${{ secrets.TOUCHSTONE_FORBIDDEN_IDENTIFIERS }}
         run: python3 scripts/check_committed_identifiers.py
-      - name: Check commit messages for work-domain identifiers
+      # Everything the push or PR publishes, not just the tip tree: every commit's
+      # message, author/committer identity, and added or changed files. The range
+      # comes from the event (needs the fetch-depth: 0 checkout above).
+      - name: Published-range identifier gate
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
         env:
           TOUCHSTONE_FORBIDDEN_IDENTIFIERS: ${{ secrets.TOUCHSTONE_FORBIDDEN_IDENTIFIERS }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          BEFORE_SHA: ${{ github.event.before }}
-        run: |
-          # On a PR, scan the branch's own commits; on a push, scan what arrived.
-          if [ -n "$BASE_SHA" ]; then
-            range="$BASE_SHA..HEAD"
-          elif [ -n "$BEFORE_SHA" ] && git cat-file -e "$BEFORE_SHA^{commit}" 2>/dev/null; then
-            range="$BEFORE_SHA..HEAD"
-          else
-            range="HEAD~1..HEAD"
-          fi
-          echo "scanning commit messages in $range"
-          python3 scripts/check_committed_identifiers.py --rev-range "$range"
+        run: python3 scripts/check_committed_identifiers.py --ci-range
