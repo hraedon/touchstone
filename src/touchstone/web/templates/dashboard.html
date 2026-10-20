@@ -65,7 +65,8 @@
         <td class="num">{{ row.projected_daily_calls }}</td>
         <td class="num">{{ row.scan_count }}</td>
         <td>{{ row.query.last_scanned_at | since }}
-          {% if row.last_scan and row.last_scan.capped %}<span class="ts-badge ts-badge--warn">capped</span>{% endif %}</td>
+          {% if row.last_scan and row.last_scan.capped %}<span class="ts-badge ts-badge--warn">capped</span>{% endif %}
+          {% if row.last_scan and row.last_scan.truncated %}<span class="ts-badge ts-badge--warn" title="this scan stopped at the query's page budget before eBay's total, so it read a best-match window rather than the whole result set; its disappearances were not recorded">partial</span>{% endif %}</td>
         <td><a href="{{ url_for('query_trend', query_id=row.query.id) }}">Trend</a></td>
       </tr>
     {% endfor %}
@@ -98,6 +99,7 @@
         <td class="num">{{ scan.api_calls }}</td>
         <td>
           {% if scan.capped %}<span class="ts-badge ts-badge--warn" title="eBay caps a result set at 10,000; this scan sampled a moving window and its disappearances were not recorded">capped</span>{% endif %}
+          {% if scan.truncated %}<span class="ts-badge ts-badge--warn" title="this scan stopped at the query's page budget before eBay's total, so it read a best-match window rather than the whole result set; its disappearances were not recorded">partial</span>{% endif %}
           {% if scan.error %}<span class="ts-badge ts-badge--crit">{{ scan.error }}</span>{% endif %}
         </td>
       </tr>

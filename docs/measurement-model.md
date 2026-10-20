@@ -70,6 +70,22 @@ that vanishes because the query hit the 10,000-item cap and re-sorted is not a m
 event at all. Disappearances from a capped scan are recorded with `capped=true` and
 excluded from the series.
 
+The same is true one level down. A scan that stops at its own page budget
+(`max_pages`, or a short allowance) before reaching eBay's reported total has read
+a best-match window of the result set, not the result set, and an item that slides
+past its last page has not left the market. Such a scan is recorded `truncated=true`
+and, like a capped one, neither produces disappearances nor serves as the baseline
+for the next scan's. The trend marks it *partial*; the remedy is a page budget that
+covers the result set, not a narrower query. Until 2026-10-21 only the 10,000-item
+ceiling was recorded, so earlier window scans were diffed as if whole; their
+disappearances stand as recorded, and `truncated` is NULL on those scans because
+whether they were cut short cannot be known after the fact.
+
+A scan also records a digest of the query definition it ran (keywords, categories,
+filter, marketplace). Absence across an edit is a change in what was asked, not in
+the market, so no disappearances are computed across one, and the trend draws a
+*query definition changed* boundary there.
+
 This series costs nothing — it falls out of diffing snapshots we already store.
 
 ### 3. Deal score — conservative by construction

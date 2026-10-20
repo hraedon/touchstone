@@ -218,6 +218,18 @@ class Scan(Base):
     # eBay caps a result set at 10,000. A capped scan's "disappearances" are an
     # artifact of the window moving, not market events, so diffing is skipped.
     capped: Mapped[bool] = mapped_column(Boolean, default=False)
+    # The scan stopped at its own page budget (or a short allowance) before
+    # reaching eBay's total: it saw a best-match window, not the result set, and
+    # is excluded from diffing for the same reason as a capped one. NULL on scans
+    # recorded before this was tracked — unknown, and treated as not whole.
+    truncated: Mapped[bool | None] = mapped_column(Boolean)
+    # Digest of the query definition in force (q, categories, filter, marketplace).
+    # Editing a query changes the population; absence across that edit is not a
+    # market event, and the trend must be able to draw the boundary. NULL before
+    # this was tracked. The seller exclusion list is NOT in it: that has its own
+    # keyed digest above, and an unkeyed hash of a filter carrying usernames would
+    # be reversible.
+    query_signature: Mapped[str | None] = mapped_column(String(64))
     error: Mapped[str | None] = mapped_column(Text)
 
     query: Mapped[Query] = relationship(back_populates="scans")
