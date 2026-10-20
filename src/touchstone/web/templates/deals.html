@@ -15,6 +15,14 @@
   least {{ MIN_COHORT_N }}, with a capacity parse that has been trusted or corrected.
 </div>
 
+<div class="ts-preamble">
+  A flag also leaves this feed when its listing leaves the market — the same
+  disappearance evidence the trend pages carry, which cannot tell a sale from an
+  ended listing, so retired flags say <em>left the market</em> and nothing
+  stronger. <strong>Verify on eBay</strong> asks the scanner for ground truth
+  about one listing: one API call, answered on the scanner's next pass.
+</div>
+
 <div class="ts-panel">
   <div class="ts-actions">
     {% if include_dismissed %}
