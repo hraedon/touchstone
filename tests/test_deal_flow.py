@@ -6,16 +6,20 @@ the product actually answers.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from tests.fake_ebay import FakeEbay, Generation, item
-from touchstone.db.models import Deal, ItemSpec, Query, ScanAggregate
+from touchstone.db.models import Deal, ItemSpec, Query, ScanAggregate, VerifyOutcome
 from touchstone.ebay.budget import BudgetGuard
 from touchstone.ebay.client import Credentials, EbayClient
 from touchstone.extract.runner import run_extraction
 from touchstone.scan.runner import ScanResult, run_scan
+from touchstone.scan.verify import run_verification
+from touchstone.web import views
 
 SPEC = "32GB 2Rx4 PC4-2400T-R DDR4 ECC REG RDIMM Server Memory"
 OTHER_SPEC = "16GB 1Rx4 PC4-2133P DDR4 ECC REG RDIMM Server Memory"
@@ -87,6 +91,52 @@ def test_a_deal_is_flagged_once_not_every_scan(session: Session, query: Query) -
 
     assert third.deals == 0
     assert len(session.scalars(select(Deal)).all()) == 1
+
+
+def test_a_deal_retires_when_its_listing_leaves_the_market(
+    session: Session, query: Query
+) -> None:
+    """The loop the operator actually lives: flag -> listing gone -> flag retired
+    from the open feed -> ground truth on request."""
+    listings = market(n=8, price=100.0)
+    listings.append(item("v1|bargain|0", price=32.0, title=SPEC, seller="cheap_seller"))
+    # Next generation: the same market without the bargain.
+    fake = FakeEbay(
+        generations=[
+            Generation(items=listings),
+            Generation(items=market(n=8, price=100.0)),
+        ]
+    )
+    fake.item_status["v1|bargain|0"] = "ENDED"
+    url = fake.start()
+    try:
+        scan(session, url, query)
+        run_extraction(session, extractor=None)
+        flagged = scan(session, url, query)
+        assert flagged.deals == 1
+
+        fake.advance()
+        gone = scan(session, url, query)
+        assert gone.disappearances == 1
+
+        # The recorded disappearance retires the flag from the open feed.
+        assert views.deal_feed(session) == []
+        (deal,) = session.scalars(select(Deal)).all()
+
+        # Ground truth, on request: the scanner asks eBay about the listing.
+        deal.verify_requested_at = datetime.now(UTC)
+        session.flush()
+        with EbayClient(credentials=Credentials("id", "secret"), base_url=url) as client:
+            result = run_verification(session, client, BudgetGuard(session, client))
+        assert result.verified == 1
+    finally:
+        fake.stop()
+
+    session.refresh(deal)
+    assert deal.verify_outcome == VerifyOutcome.UNAVAILABLE
+    assert deal.verify_requested_at is None
+    included = views.deal_feed(session, include_dismissed=True)
+    assert [view.availability for view in included] == ["verified_unavailable"]
 
 
 def test_unknown_shipping_cannot_manufacture_a_deal(

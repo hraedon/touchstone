@@ -33,6 +33,7 @@ from touchstone.db.models import Query, ScanStatus
 from touchstone.ebay.budget import BudgetGuard
 from touchstone.ebay.client import EbayClient
 from touchstone.scan.runner import ScanSkipped, run_scan
+from touchstone.scan.verify import run_verification
 
 log = logging.getLogger("touchstone.schedule")
 
@@ -129,6 +130,8 @@ class TickResult:
     api_calls: int = 0
     listings: int = 0
     deals: int = 0
+    verified: int = 0
+    verifications_queued: int = 0
     stopped_on_budget: bool = False
     lock_held_elsewhere: bool = False
     scan_ids: list[int] = field(default_factory=list)
@@ -143,6 +146,10 @@ class TickResult:
             f"{self.deals} deals",
             f"{self.api_calls} API calls",
         ]
+        if self.verified:
+            parts.append(f"{self.verified} verified")
+        if self.verifications_queued:
+            parts.append(f"{self.verifications_queued} verifications queued")
         if self.failed:
             parts.append(f"{self.failed} FAILED")
         if self.skipped_budget:
@@ -241,5 +248,16 @@ def run_tick(
             result.deals += outcome.deals
         else:
             result.failed += 1
+
+    # Availability verifications the operator queued from the UI. After the
+    # scans, so sampling is never displaced by it; inside the same lock and
+    # allowance, so two passes cannot answer one request twice.
+    if not result.stopped_on_budget:
+        verify = run_verification(session, client, guard=guard)
+        session.commit()
+        guard.committed()
+        result.verified = verify.verified
+        result.verifications_queued = verify.left_queued
+        result.api_calls += verify.api_calls
 
     return result

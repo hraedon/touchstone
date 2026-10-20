@@ -2,13 +2,31 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 from sqlalchemy.orm import Session
 
-from tests.factories import BASE_TIME, make_aggregate, make_query, make_scan
-from touchstone.db.models import RateBudget, ScanStatus
+from tests.factories import (
+    BASE_TIME,
+    make_aggregate,
+    make_listing,
+    make_query,
+    make_scan,
+)
+from touchstone.db.models import (
+    Deal,
+    Listing,
+    ListingDisappearance,
+    Query,
+    RateBudget,
+    ScanStatus,
+    VerifyOutcome,
+)
 from touchstone.scan.aggregate import MIN_COHORT_N
 from touchstone.web import views
+
+RDIMM_TITLE = "32GB 2Rx4 PC4-2400T-R DDR4 ECC REG RDIMM Server Memory"
 
 
 class TestLegacyCohortKeys:
@@ -156,3 +174,95 @@ class TestSeriesOrdering:
         trend = views.query_trend(session, query.id)
         assert trend is not None
         assert [series.cohort_key for series in trend.series] == ["b|cond=3000", "a|cond=3000"]
+
+
+class TestDealFeedAvailability:
+    """The open feed retires deals whose listing left the market, at read time.
+
+    The state is derived from recorded rows only — the listing's last sighting
+    and the disappearance series — and written nowhere, which is what makes a
+    later sighting revoke it by itself.
+    """
+
+    def seed(self, session: Session) -> tuple[Query, Listing, Deal]:
+        query = make_query(session, name="avail-q")
+        scan = make_scan(session, query)
+        listing = make_listing(session, "v1|900|0", RDIMM_TITLE)
+        listing.last_seen_at = BASE_TIME + timedelta(hours=1)
+        deal = Deal(
+            listing_id=listing.item_id,
+            scan_id=scan.id,
+            cohort_key="gen=DDR4|cap=32|cond=3000",
+            total_cost=38.0,
+            per_gb=1.1875,
+            cohort_p10=1.8,
+            cohort_n=14,
+            score=1.02,
+        )
+        session.add(deal)
+        session.flush()
+        return query, listing, deal
+
+    def disappear(
+        self, session: Session, query: Query, listing: Listing, *, at_hours: float
+    ) -> None:
+        session.add(
+            ListingDisappearance(
+                listing_item_id=listing.item_id,
+                query_id=query.id,
+                cohort_key="gen=DDR4|cap=32|cond=3000",
+                last_seen_at=listing.last_seen_at,
+                detected_at=BASE_TIME + timedelta(hours=at_hours),
+                last_price=38.0,
+                currency="USD",
+            )
+        )
+        session.flush()
+
+    def test_a_deal_whose_listing_is_still_seen_is_open(self, session: Session) -> None:
+        _, _, deal = self.seed(session)
+        feed = views.deal_feed(session)
+        assert [view.deal.id for view in feed] == [deal.id]
+        assert feed[0].availability == "open"
+
+    def test_a_deal_whose_listing_left_the_market_leaves_the_open_feed(
+        self, session: Session
+    ) -> None:
+        query, listing, _ = self.seed(session)
+        self.disappear(session, query, listing, at_hours=2)
+
+        assert views.deal_feed(session) == []
+        included = views.deal_feed(session, include_dismissed=True)
+        assert [view.availability for view in included] == ["left_market"]
+        assert included[0].left_market_at == BASE_TIME + timedelta(hours=2)
+
+    def test_a_later_sighting_reopens_the_deal(self, session: Session) -> None:
+        query, listing, _ = self.seed(session)
+        self.disappear(session, query, listing, at_hours=2)
+        listing.last_seen_at = BASE_TIME + timedelta(hours=3)
+        session.flush()
+
+        assert [view.availability for view in views.deal_feed(session)] == ["open"]
+
+    def test_a_verified_unavailable_deal_leaves_the_open_feed(
+        self, session: Session
+    ) -> None:
+        _, _, deal = self.seed(session)
+        deal.verified_at = BASE_TIME + timedelta(hours=2)
+        deal.verify_outcome = VerifyOutcome.UNAVAILABLE
+        session.flush()
+
+        assert views.deal_feed(session) == []
+        included = views.deal_feed(session, include_dismissed=True)
+        assert [view.availability for view in included] == ["verified_unavailable"]
+
+    def test_an_available_verification_outranks_an_older_disappearance(
+        self, session: Session
+    ) -> None:
+        query, listing, deal = self.seed(session)
+        self.disappear(session, query, listing, at_hours=2)
+        deal.verified_at = BASE_TIME + timedelta(hours=3)
+        deal.verify_outcome = VerifyOutcome.AVAILABLE
+        session.flush()
+
+        assert [view.availability for view in views.deal_feed(session)] == ["open"]

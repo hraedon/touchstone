@@ -49,6 +49,11 @@ from touchstone.ebay.budget import DEFAULT_DAILY_LIMIT, RESERVE, today_utc
 from touchstone.extract.cohort import UNSPECCED, is_unspecced
 from touchstone.extract.specs import DEAL_CONFIDENCE_FLOOR
 from touchstone.scan.aggregate import MIN_COHORT_N
+from touchstone.scan.deals import (
+    HIDDEN_FROM_OPEN_FEED,
+    AvailabilityState,
+    availability,
+)
 
 # Plan 001 keyed cohorts by query and condition alone, before titles were read.
 # Plan 002 replaced that with the full spec tuple. Old rows keep their old keys and
@@ -632,6 +637,11 @@ class DealView:
     spec: SpecView | None
     cohort_median_per_gb: float | None
     cohort_min_per_gb: float | None
+    # Derived at read time; written nowhere. A later sighting or verification
+    # changes it by itself, which is the whole point of not storing it.
+    availability: AvailabilityState = AvailabilityState.OPEN
+    left_market_at: datetime | None = None
+    verified_at: datetime | None = None
 
     @property
     def per_gb(self) -> float | None:
@@ -644,6 +654,15 @@ class DealView:
     @property
     def dismissed(self) -> bool:
         return self.deal.dismissed_at is not None
+
+    @property
+    def verify_queued(self) -> bool:
+        return self.availability is AvailabilityState.VERIFY_QUEUED
+
+    @property
+    def retired(self) -> bool:
+        """Out of the open feed for a reason other than the operator's own hand."""
+        return self.availability in HIDDEN_FROM_OPEN_FEED
 
 
 def deal_feed(session: Session, *, include_dismissed: bool = False, limit: int = 100
@@ -681,6 +700,24 @@ def deal_feed(session: Session, *, include_dismissed: bool = False, limit: int =
             )
         )
     }
+    # The newest disappearance per flagged listing: the recorded evidence that it
+    # left the active pool. Retention never prunes this table, so the derivation
+    # below stays stable however old the flag is.
+    gone_at: dict[str, datetime] = {
+        str(item_id): detected_at
+        for item_id, detected_at in session.execute(
+            select(
+                ListingDisappearance.listing_item_id,
+                func.max(ListingDisappearance.detected_at),
+            )
+            .where(
+                ListingDisappearance.listing_item_id.in_(
+                    [d.listing_id for d in deals]
+                )
+            )
+            .group_by(ListingDisappearance.listing_item_id)
+        ).all()
+    }
 
     views: list[DealView] = []
     for deal in deals:
@@ -699,8 +736,21 @@ def deal_feed(session: Session, *, include_dismissed: bool = False, limit: int =
                 cohort_min_per_gb=(
                     None if aggregate is None else _maybe_float(aggregate.per_gb_min)
                 ),
+                availability=availability(
+                    last_seen_at=listing.last_seen_at if listing is not None else None,
+                    newest_disappearance_at=gone_at.get(deal.listing_id),
+                    verified_at=deal.verified_at,
+                    verify_outcome=deal.verify_outcome,
+                    verify_requested_at=deal.verify_requested_at,
+                ),
+                left_market_at=gone_at.get(deal.listing_id),
+                verified_at=deal.verified_at,
             )
         )
+    if not include_dismissed:
+        # Manual dismissal is filtered in the query above; these retire on the
+        # recorded evidence instead, and return on their own if it changes.
+        views = [view for view in views if not view.retired]
     return views
 
 

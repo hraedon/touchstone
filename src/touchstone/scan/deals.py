@@ -11,7 +11,9 @@ deal costs a purchase.
 
 from __future__ import annotations
 
+import enum
 from dataclasses import dataclass
+from datetime import datetime
 
 from touchstone.extract.specs import DEAL_CONFIDENCE_FLOOR
 
@@ -98,3 +100,69 @@ def evaluate(
         cohort_n=cohort_n,
         score=round(value, 3),
     )
+
+
+class AvailabilityState(enum.StrEnum):
+    """Why a deal is in or out of the open feed, decided at read time."""
+
+    OPEN = "open"
+    LEFT_MARKET = "left_market"
+    VERIFIED_UNAVAILABLE = "verified_unavailable"
+    VERIFY_QUEUED = "verify_queued"
+
+
+HIDDEN_FROM_OPEN_FEED = frozenset(
+    {AvailabilityState.LEFT_MARKET, AvailabilityState.VERIFIED_UNAVAILABLE}
+)
+
+
+def availability(
+    *,
+    last_seen_at: datetime | None,
+    newest_disappearance_at: datetime | None,
+    verified_at: datetime | None,
+    verify_outcome: str | None,
+    verify_requested_at: datetime | None,
+) -> AvailabilityState:
+    """Decide whether a flagged deal still belongs in the open feed.
+
+    Derived, never stored. Two kinds of evidence retire a deal, in this order of
+    strength:
+
+    * a ``getItem`` verification that came back ``unavailable`` — an observed
+      fact, outranked only by a sighting of the listing newer than it (getItem
+      has transient failures, and a listing demonstrably seen again is stronger
+      than an older not-retrievable response);
+    * a disappearance newer than the listing's last sighting — the inference the
+      disappearance series already makes, outranked by an ``available``
+      verification newer than it (a verification is a snapshot, not a lease).
+
+    Anything ambiguous — a disappearance at the exact sighting instant, an
+    ``unknown`` outcome, a pending request — keeps the deal visible: the failure
+    mode of this function must be "shown", never "quietly retired".
+
+    ``verify_outcome`` takes the ``VerifyOutcome`` value (a StrEnum, so the
+    string forms compare equal); this module deliberately imports no model.
+    """
+    if (
+        verify_outcome == "unavailable"
+        and verified_at is not None
+        and (last_seen_at is None or verified_at >= last_seen_at)
+    ):
+        return AvailabilityState.VERIFIED_UNAVAILABLE
+
+    if (
+        newest_disappearance_at is not None
+        and (last_seen_at is None or newest_disappearance_at > last_seen_at)
+    ):
+        outranked = (
+            verify_outcome == "available"
+            and verified_at is not None
+            and newest_disappearance_at <= verified_at
+        )
+        if not outranked:
+            return AvailabilityState.LEFT_MARKET
+
+    if verify_requested_at is not None:
+        return AvailabilityState.VERIFY_QUEUED
+    return AvailabilityState.OPEN

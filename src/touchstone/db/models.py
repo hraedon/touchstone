@@ -69,6 +69,19 @@ class ExtractionMethod(enum.StrEnum):
     MANUAL = "manual"
 
 
+class VerifyOutcome(enum.StrEnum):
+    """What one Browse ``getItem`` call reported about a flagged listing.
+
+    ``unavailable`` means the API no longer returns the listing — which is what
+    it reports for ended ones. Ended, sold, and purged are indistinguishable
+    from outside, and the outcome does not claim to tell them apart.
+    """
+
+    AVAILABLE = "available"
+    UNAVAILABLE = "unavailable"
+    UNKNOWN = "unknown"
+
+
 # ---------------------------------------------------------------------------
 # Tracked searches and their executions
 # ---------------------------------------------------------------------------
@@ -351,6 +364,17 @@ class Deal(Base):
 
     flagged_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Operator-requested availability check, honored by the scanner on its next
+    # pass. The web tier holds no eBay credentials and can only record the
+    # request — the same shape as Query.scan_requested_at.
+    verify_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # One Browse getItem observation: an outcome and a timestamp, nothing else.
+    # The left-the-market state is deliberately NOT here — it is derived at read
+    # time from the disappearance series and written nowhere.
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    verify_outcome: Mapped[VerifyOutcome | None] = mapped_column(
+        Enum(VerifyOutcome, native_enum=False, length=32)
+    )
 
     __table_args__ = (UniqueConstraint("listing_id", name="uq_deal_listing"),)
 
