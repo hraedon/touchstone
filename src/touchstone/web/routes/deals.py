@@ -68,3 +68,24 @@ def deal_restore(deal_id: int, request: Request, session: DbSession) -> Any:
     session.commit()
     flash(request, "Deal restored.")
     return redirect(request.url_for("deal_feed").path + "?dismissed=1")
+
+
+@router.post("/{deal_id}/verify", name="deal_verify")
+def deal_verify(deal_id: int, request: Request, session: DbSession) -> Any:
+    """Queue a ground-truth check of this deal's listing.
+
+    This handler only records the request: the web tier holds no eBay
+    credentials and must never spend budget, so the scanner answers it on its
+    next pass — the same shape as a query's "scan now". Re-clicking while a
+    request is pending does not jump the queue.
+    """
+    deal = session.get(Deal, deal_id)
+    if deal is None:
+        raise not_found("deal")
+    if deal.verify_requested_at is None:
+        deal.verify_requested_at = datetime.now(UTC)
+        session.commit()
+        flash(request, "Verification queued — the scanner will answer it on its next pass.")
+    else:
+        flash(request, "A verification of this deal is already queued.")
+    return redirect(request.url_for("deal_feed").path)

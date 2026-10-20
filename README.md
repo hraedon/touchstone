@@ -54,8 +54,9 @@ touchstone does not paper over this. It reports three separate things:
 **In:** repeated sampling of user-defined eBay searches, excluding zero-feedback
 sellers; per-cohort asking-price
 statistics over time; title → structured spec normalization; $/GB comparison within
-cohorts; below-cohort deal flagging; a watchlist of pinned listings; a web UI to
-manage all of it; a compliant, functional deletion endpoint.
+cohorts; below-cohort deal flagging; retiring flagged deals whose listing left the
+market, with on-request verification against eBay; a watchlist of pinned listings;
+a web UI to manage all of it; a compliant, functional deletion endpoint.
 
 **Out:** buying, bidding, selling, or listing anything. Sold-price estimation.
 Cross-marketplace arbitrage. Notifying anyone but the operator.

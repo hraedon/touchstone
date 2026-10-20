@@ -20,7 +20,7 @@
     {% if include_dismissed %}
       <a href="{{ url_for('deal_feed') }}">Show open only</a>
     {% else %}
-      <a href="{{ url_for('deal_feed') }}?dismissed=1">Include dismissed</a>
+      <a href="{{ url_for('deal_feed') }}?dismissed=1">Include dismissed and retired</a>
     {% endif %}
   </div>
 </div>
@@ -44,17 +44,45 @@
         <input type="hidden" name="listing_id" value="{{ view.deal.listing_id }}">
         <button type="submit" class="subtle">Pin</button>
       </form>
+      {% if not view.verify_queued %}
+        <form class="inline" method="post" action="{{ url_for('deal_verify', deal_id=view.deal.id) }}">
+          <button type="submit" class="subtle">Verify on eBay</button>
+        </form>
+      {% endif %}
       {% if view.dismissed %}
         <form class="inline" method="post" action="{{ url_for('deal_restore', deal_id=view.deal.id) }}">
           <button type="submit" class="subtle">Restore</button>
         </form>
-      {% else %}
+      {% elif not view.retired %}
         <form class="inline" method="post" action="{{ url_for('deal_dismiss', deal_id=view.deal.id) }}">
           <button type="submit" class="subtle">Dismiss</button>
         </form>
       {% endif %}
     </div>
   </div>
+
+  {% if view.availability != 'open' %}
+  <div class="ts-panel-note" style="margin-top: var(--space-2)">
+    {% if view.availability == 'left_market' %}
+      <span class="ts-badge ts-badge--warn">left the market</span>
+      This listing left the active pool on {{ view.left_market_at | stamp }} — it may
+      have sold, ended, or left the search window{% if view.listing %}; it was last
+      seen {{ view.listing.last_seen_at | stamp }}{% endif %}. If any later scan sees
+      the listing again, the flag returns to the open feed on its own.
+    {% elif view.availability == 'verified_unavailable' %}
+      <span class="ts-badge ts-badge--warn">verified unavailable</span>
+      Verified on {{ view.verified_at | stamp }}: eBay no longer returns this listing.
+    {% elif view.availability == 'verify_queued' %}
+      <span class="ts-badge ts-badge--accent">verification queued</span>
+      The scanner will check this listing against eBay on its next pass.
+    {% endif %}
+  </div>
+  {% elif view.verified_at and view.deal.verify_outcome == 'available' %}
+  <div class="ts-panel-note" style="margin-top: var(--space-2)">
+    <span class="ts-badge ts-badge--ok">verified available</span>
+    Verified on {{ view.verified_at | stamp }}.
+  </div>
+  {% endif %}
 
   <div class="ts-stat-row" style="margin-top: var(--space-3)">
     <div class="ts-stat">

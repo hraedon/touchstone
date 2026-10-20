@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
@@ -9,13 +11,24 @@ from sqlalchemy.orm import Session
 
 from tests.conftest import WebHarness
 from tests.factories import (
+    BASE_TIME,
     make_aggregate,
     make_listing,
     make_observation,
     make_query,
     make_scan,
 )
-from touchstone.db.models import Deal, ExtractionMethod, ItemSpec, Query, Watch
+from touchstone.db.models import (
+    Deal,
+    ExtractionMethod,
+    ItemSpec,
+    Listing,
+    ListingDisappearance,
+    Query,
+    Scan,
+    VerifyOutcome,
+    Watch,
+)
 from touchstone.extract.normalize import title_hash
 
 RDIMM = "32GB 2Rx4 PC4-2400T-R DDR4 ECC REG RDIMM Server Memory"
@@ -195,6 +208,63 @@ class TestDeals:
         harness.client.post(f"/deals/{deal.id}/restore", follow_redirects=False)
         harness.session.expire_all()
         assert harness.session.get(Deal, deal.id).dismissed_at is None  # type: ignore[union-attr]
+
+    def _retire_by_disappearance(self, harness: WebHarness, deal: Deal) -> None:
+        session = harness.session
+        listing = session.get(Listing, deal.listing_id)
+        scan = session.get(Scan, deal.scan_id)
+        assert listing is not None and scan is not None
+        listing.last_seen_at = BASE_TIME + timedelta(hours=1)
+        session.add(
+            ListingDisappearance(
+                listing_item_id=listing.item_id,
+                query_id=scan.query_id,
+                cohort_key=deal.cohort_key,
+                last_seen_at=listing.last_seen_at,
+                detected_at=BASE_TIME + timedelta(hours=2),
+                last_price=float(deal.total_cost),
+                currency="USD",
+            )
+        )
+        session.commit()
+
+    def test_a_deal_whose_listing_left_the_market_leaves_the_open_feed(
+        self, harness: WebHarness
+    ) -> None:
+        deal = self._seed_deal(harness)
+        self._retire_by_disappearance(harness, deal)
+
+        assert "ts-band" not in harness.client.get("/deals").text
+        included = harness.client.get("/deals?dismissed=1").text
+        assert "ts-band" in included
+        assert "left the market" in included
+        # The state is derived, not a judgment to undo.
+        assert "Restore" not in included
+
+    def test_verify_queues_a_scanner_request(self, harness: WebHarness) -> None:
+        deal = self._seed_deal(harness)
+        response = harness.client.post(
+            f"/deals/{deal.id}/verify", follow_redirects=False
+        )
+        assert response.status_code == 303
+        harness.session.expire_all()
+        fresh = harness.session.get(Deal, deal.id)
+        assert fresh is not None
+        assert fresh.verify_requested_at is not None
+        assert "Verification queued" in harness.client.get("/deals").text
+
+    def test_a_verified_unavailable_deal_leaves_the_open_feed(
+        self, harness: WebHarness
+    ) -> None:
+        deal = self._seed_deal(harness)
+        deal.verified_at = datetime.now(UTC) + timedelta(minutes=1)
+        deal.verify_outcome = VerifyOutcome.UNAVAILABLE
+        harness.session.commit()
+
+        assert "ts-band" not in harness.client.get("/deals").text
+        included = harness.client.get("/deals?dismissed=1").text
+        assert "verified unavailable" in included
+        assert "no longer returns this listing" in included
 
 
 class TestSpecCorrection:

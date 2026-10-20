@@ -26,6 +26,7 @@ from touchstone.extract.runner import run_extraction
 from touchstone.scan.retention import DEFAULT_RETENTION_DAYS, prune
 from touchstone.scan.runner import ScanSkipped, run_scan
 from touchstone.scan.schedule import run_tick, writer_lock
+from touchstone.scan.verify import DEFAULT_LIMIT, run_verification
 
 log = logging.getLogger("touchstone")
 
@@ -250,6 +251,29 @@ def cmd_extract(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_verify(args: argparse.Namespace) -> int:
+    """Answer queued availability checks now, rather than on the next pass.
+
+    Takes the same writer lock the scanner takes: it writes deal rows and the
+    budget ledger, and a manual run overlapping a pass could double-answer one
+    request.
+    """
+    engine = make_engine()
+    factory = make_session_factory(engine)
+    with writer_lock(engine) as acquired, factory() as session:
+        if not acquired:
+            print("another scanner pass holds the lock; nothing attempted")
+            return 0
+        with EbayClient(credentials=_credentials()) as client:
+            guard = BudgetGuard(session, client)
+            result = run_verification(session, client, guard, limit=args.limit)
+        session.commit()
+        guard.committed()
+
+    print(f"{result.verified} verified, {result.left_queued} left queued")
+    return 0
+
+
 def cmd_deals(args: argparse.Namespace) -> int:
     factory = make_session_factory(make_engine())
     with factory() as session:
@@ -332,6 +356,14 @@ def build_parser() -> argparse.ArgumentParser:
     deals.add_argument("--limit", type=int, default=25)
     deals.add_argument("--all", action="store_true", help="include dismissed")
     deals.set_defaults(func=cmd_deals)
+
+    verify = sub.add_parser(
+        "verify", help="answer queued deal availability checks now"
+    )
+    verify.add_argument(
+        "--limit", type=int, default=DEFAULT_LIMIT, help="max verifications per run"
+    )
+    verify.set_defaults(func=cmd_verify)
 
     sub.add_parser("budget", help="remaining API quota").set_defaults(func=cmd_budget)
     return parser

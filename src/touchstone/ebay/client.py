@@ -17,10 +17,12 @@ Two documented limits shape everything here:
 from __future__ import annotations
 
 import base64
+import enum
 import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -119,6 +121,43 @@ class RateLimit:
     limit: int
     remaining: int
     reset: str | None
+
+
+class ItemAvailability(enum.StrEnum):
+    """What one ``getItem`` call reported about a listing.
+
+    ``unavailable`` means the API no longer returns the listing, which is what
+    the shopper-facing Browse API reports for ended ones. Ended, sold, and
+    purged are not distinguishable from outside, and this enum does not claim
+    to tell them apart. ``unknown`` is a failure or an ambiguous response —
+    not evidence of anything.
+    """
+
+    AVAILABLE = "available"
+    UNAVAILABLE = "unavailable"
+    UNKNOWN = "unknown"
+
+
+# Listing statuses the item endpoint can return that mean the listing is no
+# longer live. Statuses are matched case-insensitively; anything unrecognized
+# maps to UNKNOWN rather than being guessed at.
+_ENDED_STATUSES = frozenset({"COMPLETED", "CANCELED"})
+
+
+def parse_item_availability(status: object) -> ItemAvailability | None:
+    """Map an Item's ``listing.status`` to an outcome, or None if unrecognized.
+
+    None — absent, empty, or a status this parser has never seen — must be
+    treated by the caller as unknown, never guessed.
+    """
+    if not isinstance(status, str):
+        return None
+    upper = status.strip().upper()
+    if upper == "ACTIVE":
+        return ItemAvailability.AVAILABLE
+    if upper in _ENDED_STATUSES or upper.startswith("ENDED"):
+        return ItemAvailability.UNAVAILABLE
+    return None
 
 
 class TokenCache:
@@ -386,6 +425,38 @@ class EbayClient:
             limit=int(body.get("limit") or limit),
             excluded_low_feedback=low_feedback,
         )
+
+    def get_item(self, item_id: str) -> ItemAvailability:
+        """One Browse ``getItem`` call. Costs exactly one unit of the daily budget.
+
+        Never raises: the three outcomes are the whole contract. The response
+        carries seller data; this boundary reads the listing status and
+        discards everything else, exactly as the search path drops the
+        username.
+        """
+        log.info("browse get_item: item_id=%s", item_id)
+        try:
+            resp = self.http.get(
+                f"{self.base_url}/buy/browse/v1/item/{quote(item_id, safe='')}",
+                headers=self._headers(),
+            )
+        except httpx.HTTPError as exc:
+            log.warning("get_item failed (transport): %s", exc)
+            return ItemAvailability.UNKNOWN
+        self.calls_made += 1
+        if resp.status_code in (404, 410):
+            return ItemAvailability.UNAVAILABLE
+        if resp.status_code != 200:
+            log.warning("get_item failed: %s %s", resp.status_code, resp.text[:200])
+            return ItemAvailability.UNKNOWN
+        listing = resp.json().get("listing")
+        outcome = parse_item_availability(
+            listing.get("status") if isinstance(listing, dict) else None
+        )
+        if outcome is None:
+            log.warning("get_item response carried no recognizable listing status")
+            return ItemAvailability.UNKNOWN
+        return outcome
 
     def rate_limit(self, api_name: str = "Browse", api_context: str = "buy") -> RateLimit | None:
         """Authoritative remaining quota, or None if it could not be read.

@@ -88,6 +88,43 @@ Guards:
   most likely way this system embarrasses itself.
 - A listing is flagged once. Re-flagging every scan trains you to ignore it.
 
+### When a deal leaves the feed
+
+The feed does not accumulate flags for listings that are gone. Two mechanisms
+retire them, with different epistemic standing.
+
+**Left the market — derived at read time, never stored.** A listing that a
+later non-capped scan of a query it previously appeared in no longer returns has
+left the active pool, for one of the four indistinguishable reasons the
+disappearance series records. Any open deal on that listing is presented as
+*left the market* and excluded from the open feed. The state is computed from
+recorded timestamps — the listing's last sighting versus its newest
+disappearance — and written nowhere: if any later scan sees the listing again,
+the deal returns to the open feed on its own. A verification that found the
+listing available outranks an older disappearance the same way. Manual dismissal
+outranks everything; restore revokes it.
+
+**Verification — an observation, taken on request.** The operator can ask for
+ground truth about one flagged listing: the scanner makes a single Browse
+`getItem` call, spending one call from the daily allowance. The web tier holds
+no eBay credentials and can never spend budget, so the request is recorded in
+the database and honored on the scanner's next pass — the same shape as
+`scan_requested_at`.
+
+The result is an outcome and a timestamp, and nothing else:
+
+- `available` — the API returned the listing as active.
+- `unavailable` — the listing is not retrievable, which is what the API reports
+  for ended listings. Ended, sold, and purged are not distinguishable from
+  outside, and the outcome does not claim to tell them apart.
+- `unknown` — an error or an ambiguous response. A transient failure is not
+  evidence, so `unknown` changes nothing.
+
+An `unavailable` verification removes the deal from the open feed; an
+`available` one keeps it there. The `getItem` response carries seller data; the
+parser reads the listing status and discards the rest at the boundary, exactly
+as search does.
+
 ## Cohorts
 
 Comparing a 32GB 2Rx4 PC4-2400 RDIMM against an 8GB UDIMM produces a number with no

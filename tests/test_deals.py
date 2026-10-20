@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
+from touchstone.db.models import VerifyOutcome
 from touchstone.extract.cohort import UNSPECCED, CohortFields, cohort_key, is_unspecced
 from touchstone.extract.specs import DEAL_CONFIDENCE_FLOOR
-from touchstone.scan.deals import MIN_COHORT_N, MIN_SCORE, evaluate, score
+from touchstone.scan.deals import (
+    MIN_COHORT_N,
+    MIN_SCORE,
+    availability,
+    evaluate,
+    score,
+)
 
 FULL = CohortFields(
     ddr_gen="DDR4",
@@ -194,3 +203,124 @@ class TestMerelyCheapestIsNotADeal:
         )
         assert at is not None and at.score == MIN_SCORE
         assert under is None
+
+
+class TestAvailability:
+    """The read-time state that retires deals whose listing is gone.
+
+    Three recorded timestamps decide it — the listing's last sighting, its
+    newest disappearance, and the newest verification — and nothing is stored:
+    a later sighting or a fresh observation revokes a retired state on its own.
+    """
+
+    T0 = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+
+    def at(self, hours: float) -> datetime:
+        return self.T0 + timedelta(hours=hours)
+
+    def state(self, **overrides: object) -> str:
+        args: dict[str, object] = {
+            "last_seen_at": self.at(1),
+            "newest_disappearance_at": None,
+            "verified_at": None,
+            "verify_outcome": None,
+            "verify_requested_at": None,
+        }
+        args.update(overrides)
+        return availability(**args)  # type: ignore[arg-type]
+
+    def test_a_listing_still_seen_is_open(self) -> None:
+        assert self.state() == "open"
+
+    def test_a_disappearance_newer_than_the_last_sighting_retires_the_deal(
+        self,
+    ) -> None:
+        assert (
+            self.state(newest_disappearance_at=self.at(3)) == "left_market"
+        )
+
+    def test_a_later_sighting_revokes_the_disappearance(self) -> None:
+        """Any query re-seeing the listing puts the deal back by itself."""
+        assert (
+            self.state(last_seen_at=self.at(5), newest_disappearance_at=self.at(3))
+            == "open"
+        )
+
+    def test_a_disappearance_at_the_sighting_instant_stays_open(self) -> None:
+        """Two queries scanning in the same second is ambiguity, not evidence;
+        ambiguity keeps the deal visible."""
+        assert (
+            self.state(
+                last_seen_at=self.at(3), newest_disappearance_at=self.at(3)
+            )
+            == "open"
+        )
+
+    def test_a_verified_unavailable_outcome_retires_the_deal(self) -> None:
+        assert (
+            self.state(
+                verified_at=self.at(2),
+                verify_outcome=VerifyOutcome.UNAVAILABLE,
+            )
+            == "verified_unavailable"
+        )
+
+    def test_a_re_sighting_after_an_unavailable_verification_reopens(self) -> None:
+        """getItem has transient failures; a listing demonstrably seen again
+        outranks an older not-retrievable response."""
+        assert (
+            self.state(
+                last_seen_at=self.at(5),
+                verified_at=self.at(2),
+                verify_outcome=VerifyOutcome.UNAVAILABLE,
+            )
+            == "open"
+        )
+
+    def test_an_available_verification_outranks_an_older_disappearance(self) -> None:
+        assert (
+            self.state(
+                newest_disappearance_at=self.at(3),
+                verified_at=self.at(4),
+                verify_outcome=VerifyOutcome.AVAILABLE,
+            )
+            == "open"
+        )
+
+    def test_a_disappearance_newer_than_an_available_verification_retires(self) -> None:
+        """A verification is a snapshot, not a lease."""
+        assert (
+            self.state(
+                newest_disappearance_at=self.at(5),
+                verified_at=self.at(4),
+                verify_outcome=VerifyOutcome.AVAILABLE,
+            )
+            == "left_market"
+        )
+
+    def test_an_unknown_outcome_is_not_evidence(self) -> None:
+        """A transient failure retires nothing; the disappearance still can."""
+        assert (
+            self.state(verified_at=self.at(2), verify_outcome=VerifyOutcome.UNKNOWN)
+            == "open"
+        )
+        assert (
+            self.state(
+                newest_disappearance_at=self.at(3),
+                verified_at=self.at(2),
+                verify_outcome=VerifyOutcome.UNKNOWN,
+            )
+            == "left_market"
+        )
+
+    def test_a_queued_request_is_display_only(self) -> None:
+        assert self.state(verify_requested_at=self.at(2)) == "verify_queued"
+
+    def test_a_retired_state_outranks_a_queued_request(self) -> None:
+        """The queue badge is informational; hiding still hides."""
+        assert (
+            self.state(
+                newest_disappearance_at=self.at(3), verify_requested_at=self.at(2)
+            )
+            == "left_market"
+        )

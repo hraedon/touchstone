@@ -1,8 +1,8 @@
 """A fake eBay, good enough to exercise the whole scan path offline.
 
-Serves the three endpoints touchstone calls: the OAuth token mint, Browse
-``item_summary/search`` (with real pagination semantics), and the Developer
-Analytics rate-limit read.
+Serves the four endpoints touchstone calls: the OAuth token mint, Browse
+``item_summary/search`` (with real pagination semantics), Browse
+``item/{item_id}``, and the Developer Analytics rate-limit read.
 
 The generation mechanism is what makes the diff testable: ``advance()`` swaps which
 snapshot is served, so a test can express "this listing was here, then it wasn't"
@@ -16,7 +16,7 @@ import threading
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 
 def item(
@@ -93,6 +93,14 @@ class FakeEbay:
     search_calls: int = field(default=0, init=False)
     rate_limit_calls: int = field(default=0, init=False)
     filters_seen: list[str] = field(default_factory=list, init=False)
+    # What GET /buy/browse/v1/item/{id} serves, keyed by item id. An id absent
+    # from the mapping gets the 404 the real API gives once it stops returning
+    # a listing — which is the observable meaning of "ended".
+    item_status: dict[str, str] = field(default_factory=dict, init=False)
+    # Ids the item endpoint should fail on with a 500, to exercise the unknown
+    # outcome: a transient failure is not evidence that a listing ended.
+    item_endpoint_fails: set[str] = field(default_factory=set, init=False)
+    get_item_calls: list[str] = field(default_factory=list, init=False)
     _server: HTTPServer | None = field(default=None, init=False)
     _thread: threading.Thread | None = field(default=None, init=False)
 
@@ -160,6 +168,41 @@ class FakeEbay:
                                     ],
                                 }
                             ]
+                        },
+                    )
+                    return
+
+                if parsed.path.startswith("/buy/browse/v1/item/"):
+                    # The client percent-encodes the id (it can contain "|");
+                    # a real server decodes before routing, so the fake does too.
+                    item_id = unquote(parsed.path[len("/buy/browse/v1/item/") :])
+                    fake.get_item_calls.append(item_id)
+                    if item_id in fake.item_endpoint_fails:
+                        self._send(500, {"error": "transient upstream failure"})
+                        return
+                    status = fake.item_status.get(item_id)
+                    if status is None:
+                        self._send(
+                            404,
+                            {
+                                "errorMessage": [
+                                    {
+                                        "errorId": 1100,
+                                        "message": "Resource not found",
+                                    }
+                                ]
+                            },
+                        )
+                        return
+                    # The real getItem response carries the seller; the fake
+                    # keeps it so the client's read-only-the-status posture is
+                    # exercised against a response that definitely has one.
+                    self._send(
+                        200,
+                        {
+                            "itemId": item_id,
+                            "listing": {"status": status},
+                            "seller": {"username": "seller_one"},
                         },
                     )
                     return
