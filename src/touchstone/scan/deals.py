@@ -35,30 +35,30 @@ MIN_SCORE = 1.0
 class DealCandidate:
     listing_id: str
     cohort_key: str
-    per_gb: float
+    per_unit: float
     cohort_p10: float
     cohort_n: int
     score: float
 
 
-def score(per_gb: float, cohort_p10: float, cohort_median: float) -> float:
+def score(per_unit: float, cohort_p10: float, cohort_median: float) -> float:
     """How far below p10, in units of the cohort's own spread.
 
     Normalizing by spread rather than by absolute dollars makes scores comparable
-    between a cheap cohort and an expensive one — a $2 gap means something different
-    at $3/GB than at $30/GB.
+    between a cheap cohort and an expensive one — and, the same way, between a
+    $/GB cohort, a $/TB cohort, and a per-item one.
     """
     # A degenerate cohort (every listing at the same price) has no spread to divide
     # by; fall back to a fraction of the level so the score stays finite.
     spread = max(cohort_median - cohort_p10, cohort_p10 * 0.05, 1e-6)
-    return (cohort_p10 - per_gb) / spread
+    return (cohort_p10 - per_unit) / spread
 
 
 def evaluate(
     *,
     listing_id: str,
     cohort_key: str,
-    per_gb: float | None,
+    per_unit: float | None,
     cohort_p10: float | None,
     cohort_median: float | None,
     cohort_n: int,
@@ -70,32 +70,32 @@ def evaluate(
     Every gate here exists because failing it produces a *confident wrong answer*
     rather than a missing one:
 
-    * no $/GB — nothing to compare;
+    * no normalized price — nothing to compare;
     * thin cohort — a p10 over four listings is an artifact;
     * merely-cheapest — see MIN_SCORE; being the lowest in a cohort is arithmetic,
       not evidence;
-    * low spec confidence — a mis-parsed capacity produces a spectacular fake
-      bargain, and that is the single most likely way this system embarrasses
+    * low spec confidence — a mis-parsed capacity or model produces a spectacular
+      fake bargain, and that is the single most likely way this system embarrasses
       itself. A human correction (``manual``) overrides the score gate, since a
       person has already looked.
     """
-    if per_gb is None or cohort_p10 is None or cohort_median is None:
+    if per_unit is None or cohort_p10 is None or cohort_median is None:
         return None
     if cohort_n < MIN_COHORT_N:
         return None
     if not manual and (confidence is None or confidence < DEAL_CONFIDENCE_FLOOR):
         return None
-    if per_gb >= cohort_p10:
+    if per_unit >= cohort_p10:
         return None
 
-    value = score(per_gb, cohort_p10, cohort_median)
+    value = score(per_unit, cohort_p10, cohort_median)
     if value < MIN_SCORE:
         return None
 
     return DealCandidate(
         listing_id=listing_id,
         cohort_key=cohort_key,
-        per_gb=per_gb,
+        per_unit=per_unit,
         cohort_p10=cohort_p10,
         cohort_n=cohort_n,
         score=round(value, 3),

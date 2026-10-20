@@ -13,14 +13,24 @@
 <form class="ts-form" method="post" action="{{ url_for('spec_correct', title_hash=title_hash) }}">
   <div class="ts-grid-2">
     <div class="ts-field">
-      <label for="capacity_per_module_gb">GB per module</label>
-      <input id="capacity_per_module_gb" name="capacity_per_module_gb" type="number" min="1"
-             value="{{ spec.capacity_per_module_gb if spec and spec.capacity_per_module_gb is not none else '' }}">
+      <label for="category">Category</label>
+      <select id="category" name="category">
+        <option value="" {% if not spec or spec.category is none %}selected{% endif %}>— unset —</option>
+        <option value="memory" {% if spec and spec.category == 'memory' %}selected{% endif %}>memory ($/GB)</option>
+        <option value="storage" {% if spec and spec.category == 'storage' %}selected{% endif %}>storage ($/TB)</option>
+        <option value="other" {% if spec and spec.category == 'other' %}selected{% endif %}>per-item ($/item)</option>
+      </select>
+      <span class="hint">Decides which fields below are read and what price divides by.</span>
     </div>
     <div class="ts-field">
-      <label for="module_count">Modules</label>
+      <label for="module_count">Units in the lot</label>
       <input id="module_count" name="module_count" type="number" min="1"
              value="{{ spec.module_count if spec and spec.module_count is not none else '' }}">
+    </div>
+    <div class="ts-field">
+      <label for="capacity_per_module_gb">GB per module (memory)</label>
+      <input id="capacity_per_module_gb" name="capacity_per_module_gb" type="number" min="1"
+             value="{{ spec.capacity_per_module_gb if spec and spec.capacity_per_module_gb is not none else '' }}">
     </div>
     <div class="ts-field">
       <label for="total_gb">Total GB</label>
@@ -59,6 +69,33 @@
         <option value="yes" {% if spec and spec.registered is sameas true %}selected{% endif %}>yes</option>
         <option value="no" {% if spec and spec.registered is sameas false %}selected{% endif %}>no</option>
       </select>
+    </div>
+    <div class="ts-field">
+      <label for="capacity_tb">TB per unit (storage)</label>
+      <input id="capacity_tb" name="capacity_tb" type="number" step="0.01" min="0.1"
+             value="{{ '%.2f' % spec.capacity_tb if spec and spec.capacity_tb is not none else '' }}">
+      <span class="hint">Decimal is exact: 3.84TB stays 3.84.</span>
+    </div>
+    <div class="ts-field">
+      <label for="storage_type">Drive type (storage)</label>
+      <input id="storage_type" name="storage_type" type="text" placeholder="SSD / HDD"
+             value="{{ spec.storage_type or '' if spec else '' }}">
+    </div>
+    <div class="ts-field">
+      <label for="storage_iface">Interface (storage)</label>
+      <input id="storage_iface" name="storage_iface" type="text" placeholder="NVMe / SATA / SAS"
+             value="{{ spec.storage_iface or '' if spec else '' }}">
+    </div>
+    <div class="ts-field">
+      <label for="storage_form">Drive form (storage)</label>
+      <input id="storage_form" name="storage_form" type="text" placeholder="2.5 / 3.5 / U.2 / M.2"
+             value="{{ spec.storage_form or '' if spec else '' }}">
+    </div>
+    <div class="ts-field">
+      <label for="product_model">Model (per-item)</label>
+      <input id="product_model" name="product_model" type="text" placeholder="E810-XXVDA2"
+             value="{{ spec.product_model or '' if spec else '' }}">
+      <span class="hint">Canonical, hyphenated, with brand prefix — the model IS the good.</span>
     </div>
   </div>
 

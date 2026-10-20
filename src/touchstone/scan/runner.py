@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import assert_never
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -25,15 +26,23 @@ from touchstone.db.models import (
     Listing,
     ListingDisappearance,
     ListingObservation,
+    PriceUnit,
     Query,
     Scan,
     ScanAggregate,
     ScanStatus,
+    SpecCategory,
 )
 from touchstone.ebay import exclusions
 from touchstone.ebay.budget import BudgetGuard
 from touchstone.ebay.client import MAX_LIMIT, MAX_RESULT_SET, EbayClient, ParsedListing
-from touchstone.extract.cohort import CohortFields, cohort_key
+from touchstone.extract.cohort import (
+    CohortFields,
+    StorageFields,
+    cohort_key,
+    item_key,
+    storage_key,
+)
 from touchstone.extract.normalize import title_hash
 from touchstone.scan.aggregate import Priced, Stats, cohort_stats
 from touchstone.scan.deals import evaluate
@@ -93,20 +102,81 @@ def _spec_index(session: Session, hashes: set[str]) -> dict[str, ItemSpec]:
 
 
 def _cohort_of(spec: ItemSpec | None, condition_id: str | None) -> str:
-    if spec is None:
+    """The cohort key for a listing's spec, dispatched on its category.
+
+    The memory format is frozen (see extract/cohort.py); storage and per-item
+    formats are prefixed with their own leads. A spec with no category is a
+    pre-category row the backfill missed, which cohorts as unspecced rather
+    than being guessed into a market.
+    """
+    if spec is None or spec.category is None:
         return cohort_key(None, condition_id)
-    return cohort_key(
-        CohortFields(
-            ddr_gen=spec.ddr_gen,
-            form_factor=spec.form_factor,
-            ecc=spec.ecc,
-            registered=spec.registered,
-            capacity_per_module_gb=spec.capacity_per_module_gb,
-            speed_mt=spec.speed_mt,
-            rank_org=spec.rank_org,
-        ),
-        condition_id,
-    )
+    match spec.category:
+        case SpecCategory.MEMORY:
+            return cohort_key(
+                CohortFields(
+                    ddr_gen=spec.ddr_gen,
+                    form_factor=spec.form_factor,
+                    ecc=spec.ecc,
+                    registered=spec.registered,
+                    capacity_per_module_gb=spec.capacity_per_module_gb,
+                    speed_mt=spec.speed_mt,
+                    rank_org=spec.rank_org,
+                ),
+                condition_id,
+            )
+        case SpecCategory.STORAGE:
+            return storage_key(
+                StorageFields(
+                    storage_type=spec.storage_type,
+                    capacity_tb=float(spec.capacity_tb) if spec.capacity_tb else None,
+                    storage_iface=spec.storage_iface,
+                    storage_form=spec.storage_form,
+                ),
+                condition_id,
+            )
+        case SpecCategory.OTHER:
+            return item_key(spec.product_model, condition_id)
+        case _:
+            assert_never(spec.category)
+
+
+def _units_of(spec: ItemSpec | None) -> float | None:
+    """The normalization denominator a spec's category prices by.
+
+    Memory divides by GB, storage by decimal TB (lot count included), and a
+    per-item good divides by 1 — its normalized price *is* its delivered price.
+    """
+    if spec is None or spec.category is None:
+        return None
+    match spec.category:
+        case SpecCategory.MEMORY:
+            if spec.total_gb is None:
+                return None
+            return float(spec.total_gb)
+        case SpecCategory.STORAGE:
+            if spec.capacity_tb is None:
+                return None
+            count = spec.module_count or 1
+            return float(spec.capacity_tb) * count
+        case SpecCategory.OTHER:
+            return float(spec.module_count or 1)
+        case _:
+            assert_never(spec.category)
+
+
+def _unit_of(spec: ItemSpec | None) -> PriceUnit | None:
+    if spec is None or spec.category is None:
+        return None
+    match spec.category:
+        case SpecCategory.MEMORY:
+            return PriceUnit.GB
+        case SpecCategory.STORAGE:
+            return PriceUnit.TB
+        case SpecCategory.OTHER:
+            return PriceUnit.ITEM
+        case _:
+            assert_never(spec.category)
 
 
 def _previous_scan(session: Session, query_id: int, before_scan_id: int) -> Scan | None:
@@ -187,9 +257,10 @@ def _flag_deals(
     scan_id: int,
     seen: dict[str, ParsedListing],
     cohort_of: dict[str, str],
-    gb_of: dict[str, int | None],
+    units_of: dict[str, float | None],
+    unit_of: dict[str, PriceUnit | None],
     specs: dict[str, ItemSpec],
-    per_gb_by_cohort: dict[str, Stats],
+    per_unit_by_cohort: dict[str, Stats],
 ) -> int:
     """Flag listings below their cohort's p10, once each, ever.
 
@@ -206,13 +277,15 @@ def _flag_deals(
         if parsed.item_id in already:
             continue
         key = cohort_of[parsed.item_id]
-        stats = per_gb_by_cohort.get(key)
-        total_gb = gb_of[parsed.item_id]
+        stats = per_unit_by_cohort.get(key)
+        units = units_of[parsed.item_id]
+        unit = unit_of[parsed.item_id]
         if (
             parsed.total_cost is None
             or stats is None
-            or total_gb is None
-            or total_gb <= 0
+            or units is None
+            or units <= 0
+            or unit is None
         ):
             continue
 
@@ -220,7 +293,7 @@ def _flag_deals(
         candidate = evaluate(
             listing_id=parsed.item_id,
             cohort_key=key,
-            per_gb=parsed.total_cost / total_gb,
+            per_unit=parsed.total_cost / units,
             cohort_p10=stats.p10,
             cohort_median=stats.median,
             cohort_n=stats.n,
@@ -235,7 +308,8 @@ def _flag_deals(
                 scan_id=scan_id,
                 cohort_key=candidate.cohort_key,
                 total_cost=parsed.total_cost,
-                per_gb=candidate.per_gb,
+                per_unit=candidate.per_unit,
+                unit=unit,
                 cohort_p10=candidate.cohort_p10,
                 cohort_n=candidate.cohort_n,
                 score=candidate.score,
@@ -383,11 +457,19 @@ def run_scan(
         # --- cohorts from stored specs ---------------------------------------
         specs = _spec_index(session, {title_hash(p.title) for p in seen.values()})
         cohort_of: dict[str, str] = {}
-        gb_of: dict[str, int | None] = {}
+        units_of: dict[str, float | None] = {}
+        unit_of: dict[str, PriceUnit | None] = {}
+        # Every member of a cohort shares its category by construction of the
+        # key, so the first member's unit is the cohort's unit.
+        unit_by_cohort: dict[str, PriceUnit | None] = {}
         for parsed in seen.values():
             spec = specs.get(title_hash(parsed.title))
-            cohort_of[parsed.item_id] = _cohort_of(spec, parsed.condition_id)
-            gb_of[parsed.item_id] = spec.total_gb if spec is not None else None
+            key = _cohort_of(spec, parsed.condition_id)
+            cohort_of[parsed.item_id] = key
+            units_of[parsed.item_id] = _units_of(spec)
+            unit_of[parsed.item_id] = _unit_of(spec)
+            if key not in unit_by_cohort:
+                unit_by_cohort[key] = _unit_of(spec)
 
         # --- aggregates: computed here, written once, never recomputed -------
         priced = [
@@ -395,13 +477,13 @@ def run_scan(
                 cohort_key=cohort_of[parsed.item_id],
                 total_cost=parsed.total_cost,
                 currency=parsed.currency,
-                total_gb=gb_of[parsed.item_id],
+                units=units_of[parsed.item_id],
             )
             for parsed in seen.values()
         ]
         cohorts = cohort_stats(priced)
-        per_gb_by_cohort: dict[str, Stats] = {
-            c.cohort_key: c.per_gb for c in cohorts if c.per_gb is not None
+        per_unit_by_cohort: dict[str, Stats] = {
+            c.cohort_key: c.per_unit for c in cohorts if c.per_unit is not None
         }
         for cohort in cohorts:
             session.add(
@@ -417,17 +499,24 @@ def run_scan(
                     price_p25=cohort.price.p25,
                     price_median=cohort.price.median,
                     price_mean=cohort.price.mean,
-                    per_gb_min=cohort.per_gb.minimum if cohort.per_gb else None,
-                    per_gb_p10=cohort.per_gb.p10 if cohort.per_gb else None,
-                    per_gb_p25=cohort.per_gb.p25 if cohort.per_gb else None,
-                    per_gb_median=cohort.per_gb.median if cohort.per_gb else None,
-                    per_gb_mean=cohort.per_gb.mean if cohort.per_gb else None,
+                    # Recorded at write time with the numbers it explains; an
+                    # unspecced cohort has neither a unit nor normalized stats.
+                    unit=(
+                        unit_by_cohort.get(cohort.cohort_key)
+                        if cohort.per_unit is not None
+                        else None
+                    ),
+                    per_unit_min=cohort.per_unit.minimum if cohort.per_unit else None,
+                    per_unit_p10=cohort.per_unit.p10 if cohort.per_unit else None,
+                    per_unit_p25=cohort.per_unit.p25 if cohort.per_unit else None,
+                    per_unit_median=cohort.per_unit.median if cohort.per_unit else None,
+                    per_unit_mean=cohort.per_unit.mean if cohort.per_unit else None,
                 )
             )
 
         # --- deal flagging ----------------------------------------------------
         flagged = _flag_deals(
-            session, scan.id, seen, cohort_of, gb_of, specs, per_gb_by_cohort
+            session, scan.id, seen, cohort_of, units_of, unit_of, specs, per_unit_by_cohort
         )
 
         scan.status = ScanStatus.COMPLETE

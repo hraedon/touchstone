@@ -64,47 +64,47 @@ def test_mixed_currencies_are_separate_cohorts_not_blended() -> None:
     assert all(c.price.n == 1 for c in cohorts)
 
 
-def test_per_gb_is_none_when_specs_are_partial() -> None:
+def test_per_unit_is_none_when_specs_are_partial() -> None:
     """A $/GB over the specced subset would describe a different population than
     the price figure printed beside it."""
     items = [
-        Priced("a", 100.0, "USD", total_gb=32),
-        Priced("a", 200.0, "USD", total_gb=None),
+        Priced("a", 100.0, "USD", units=32),
+        Priced("a", 200.0, "USD", units=None),
     ]
     (cohort,) = cohort_stats(items)
     assert cohort.price.n == 2
-    assert cohort.per_gb is None
+    assert cohort.per_unit is None
 
 
-def test_per_gb_computed_when_every_member_is_specced() -> None:
+def test_per_unit_computed_when_every_member_is_specced() -> None:
     items = [
-        Priced("a", 64.0, "USD", total_gb=32),
-        Priced("a", 128.0, "USD", total_gb=32),
+        Priced("a", 64.0, "USD", units=32),
+        Priced("a", 128.0, "USD", units=32),
     ]
     (cohort,) = cohort_stats(items)
-    assert cohort.per_gb is not None
-    assert cohort.per_gb.minimum == 2.0
-    assert cohort.per_gb.median == 3.0
+    assert cohort.per_unit is not None
+    assert cohort.per_unit.minimum == 2.0
+    assert cohort.per_unit.median == 3.0
 
 
-def test_unknown_totals_are_excluded_from_price_and_per_gb_statistics() -> None:
+def test_unknown_totals_are_excluded_from_price_and_per_unit_statistics() -> None:
     items = [
-        Priced("a", 64.0, "USD", total_gb=32),
-        Priced("a", 96.0, "USD", total_gb=32),
-        Priced("a", None, "USD", total_gb=32),
+        Priced("a", 64.0, "USD", units=32),
+        Priced("a", 96.0, "USD", units=32),
+        Priced("a", None, "USD", units=32),
     ]
     (cohort,) = cohort_stats(items)
     assert cohort.price.n == 2
     assert cohort.price.minimum == 64.0
     assert cohort.price.median == 80.0
-    assert cohort.per_gb is not None
-    assert cohort.per_gb.n == 2
-    assert cohort.per_gb.minimum == 2.0
-    assert cohort.per_gb.median == 2.5
+    assert cohort.per_unit is not None
+    assert cohort.per_unit.n == 2
+    assert cohort.per_unit.minimum == 2.0
+    assert cohort.per_unit.median == 2.5
 
 
 def test_an_all_unknown_total_cohort_produces_no_aggregate() -> None:
-    assert cohort_stats([Priced("a", None, "USD", total_gb=32)]) == []
+    assert cohort_stats([Priced("a", None, "USD", units=32)]) == []
 
 
 def test_cohort_key_separates_conditions() -> None:

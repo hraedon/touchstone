@@ -47,7 +47,7 @@ def _seed_trend(harness: WebHarness) -> int:
     query = make_query(session)
     for hour in range(4):
         scan = make_scan(session, query, offset_hours=hour * 24)
-        make_aggregate(session, scan, n=12, price_median=60.0 + hour, per_gb_median=1.9)
+        make_aggregate(session, scan, n=12, price_median=60.0 + hour, per_unit_median=1.9)
     session.commit()
     return query.id
 
@@ -101,7 +101,7 @@ class TestSuppression:
         session = harness.session
         query = make_query(session, name=f"thin-{n}")
         scan = make_scan(session, query)
-        make_aggregate(session, scan, n=n, price_median=61.0, per_gb_median=1.91)
+        make_aggregate(session, scan, n=n, price_median=61.0, per_unit_median=1.91)
         session.commit()
 
         body = harness.client.get(f"/queries/{query.id}/trend").text
@@ -243,7 +243,7 @@ class TestAggregatesAreNeverRecomputed:
         session = harness.session
         query = make_query(session, name="prune-proof")
         scan = make_scan(session, query)
-        make_aggregate(session, scan, n=30, price_median=77.5, per_gb_median=2.25)
+        make_aggregate(session, scan, n=30, price_median=77.5, per_unit_median=2.25)
         listing = make_listing(session, "v1|1|0", "32GB PC4-2400T-R DDR4 ECC RDIMM")
         make_observation(session, listing, scan)
         session.commit()

@@ -24,8 +24,10 @@ from touchstone.db.models import (
     ItemSpec,
     Listing,
     ListingDisappearance,
+    PriceUnit,
     Query,
     Scan,
+    SpecCategory,
     VerifyOutcome,
     Watch,
 )
@@ -160,10 +162,13 @@ class TestDeals:
         query = make_query(session, name="deals-q")
         scan = make_scan(session, query)
         cohort = "gen=DDR4|ff=RDIMM|ecc=y|reg=y|cap=32|mt=2400|rank=2Rx4|cond=3000"
-        make_aggregate(session, scan, cohort_key=cohort, n=14, per_gb_median=2.4, per_gb_p10=1.8)
+        make_aggregate(
+            session, scan, cohort_key=cohort, n=14, per_unit_median=2.4, per_unit_p10=1.8
+        )
         listing = make_listing(session, "v1|555|0", RDIMM)
         session.add(
             ItemSpec(
+                category=SpecCategory.MEMORY,
                 title_hash=listing.title_hash,
                 normalized_title=RDIMM.lower(),
                 capacity_per_module_gb=32,
@@ -178,7 +183,7 @@ class TestDeals:
             scan_id=scan.id,
             cohort_key=cohort,
             total_cost=38.0,
-            per_gb=1.1875,
+            per_unit=1.1875,
             cohort_p10=1.8,
             cohort_n=14,
             score=1.02,
@@ -193,7 +198,7 @@ class TestDeals:
         self._seed_deal(harness)
         body = harness.client.get("/deals").text
         assert "ts-band" in body, "the cohort price band is the signature element"
-        assert "Capacity parse" in body
+        assert "Spec parse (memory)" in body
         assert "pattern" in body
         assert "1.188" in body
         assert "spread-unit" in body
@@ -252,6 +257,51 @@ class TestDeals:
         assert fresh is not None
         assert fresh.verify_requested_at is not None
         assert "Verification queued" in harness.client.get("/deals").text
+
+    def test_a_deal_page_labels_prices_in_the_deal_own_unit(
+        self, harness: WebHarness
+    ) -> None:
+        """A storage deal is priced per TB, and the page says so."""
+        session = harness.session
+        query = make_query(session, name="ssd-q")
+        scan = make_scan(session, query)
+        cohort = "sto|type=SSD|cap=3.84|iface=NVMe|form=U.2|cond=3000"
+        make_aggregate(
+            session, scan, cohort_key=cohort, n=14, per_unit_median=46.9, per_unit_p10=44.0
+        )
+        listing = make_listing(session, "v1|9001|0", "Micron 7450 PRO 3.84TB U.2 NVMe SSD")
+        session.add(
+            ItemSpec(
+                category=SpecCategory.STORAGE,
+                title_hash=listing.title_hash,
+                normalized_title="micron 7450 pro 3.84tb u.2 nvme ssd",
+                capacity_tb=3.84,
+                module_count=1,
+                storage_type="SSD",
+                storage_iface="NVMe",
+                storage_form="U.2",
+                method=ExtractionMethod.REGEX,
+                confidence=0.85,
+            )
+        )
+        session.add(
+            Deal(
+                listing_id=listing.item_id,
+                scan_id=scan.id,
+                cohort_key=cohort,
+                total_cost=60.0,
+                per_unit=15.625,
+                unit=PriceUnit.TB,
+                cohort_p10=44.0,
+                cohort_n=14,
+                score=1.02,
+            )
+        )
+        session.commit()
+        body = harness.client.get("/deals").text
+        assert "$/TB" in body
+        assert "Spec parse (storage)" in body
+        assert "3.84 TB" in body
 
     def test_a_verified_unavailable_deal_leaves_the_open_feed(
         self, harness: WebHarness
@@ -431,10 +481,13 @@ class TestDegenerateBand:
         query = make_query(session, name="no-spread")
         scan = make_scan(session, query)
         cohort = "gen=DDR4|ff=RDIMM|ecc=y|reg=y|cap=32|mt=2666|rank=?|cond=3000"
-        make_aggregate(session, scan, cohort_key=cohort, n=40, per_gb_median=5.3, per_gb_p10=5.3)
+        make_aggregate(
+            session, scan, cohort_key=cohort, n=40, per_unit_median=5.3, per_unit_p10=5.3
+        )
         listing = make_listing(session, "v1|4040|0", RDIMM)
         session.add(
             ItemSpec(
+                category=SpecCategory.MEMORY,
                 title_hash=listing.title_hash,
                 normalized_title=RDIMM.lower(),
                 total_gb=32,
@@ -448,7 +501,7 @@ class TestDegenerateBand:
                 scan_id=scan.id,
                 cohort_key=cohort,
                 total_cost=142.0,
-                per_gb=4.44,
+                per_unit=4.44,
                 cohort_p10=5.3,
                 cohort_n=40,
                 score=3.27,

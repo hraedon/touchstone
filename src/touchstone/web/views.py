@@ -38,11 +38,13 @@ from touchstone.db.models import (
     Listing,
     ListingDisappearance,
     ListingObservation,
+    PriceUnit,
     Query,
     RateBudget,
     Scan,
     ScanAggregate,
     ScanStatus,
+    SpecCategory,
     Watch,
 )
 from touchstone.ebay.budget import DEFAULT_DAILY_LIMIT, RESERVE, today_utc
@@ -151,11 +153,12 @@ class AskingPoint:
     price_p25: float
     price_median: float
     price_mean: float
-    per_gb_min: float | None
-    per_gb_p10: float | None
-    per_gb_p25: float | None
-    per_gb_median: float | None
-    per_gb_mean: float | None
+    unit: PriceUnit | None
+    per_unit_min: float | None
+    per_unit_p10: float | None
+    per_unit_p25: float | None
+    per_unit_median: float | None
+    per_unit_mean: float | None
     capped: bool
     min_seller_feedback: int
 
@@ -372,11 +375,12 @@ def query_trend(
                 price_p25=float(aggregate.price_p25),
                 price_median=float(aggregate.price_median),
                 price_mean=float(aggregate.price_mean),
-                per_gb_min=_maybe_float(aggregate.per_gb_min),
-                per_gb_p10=_maybe_float(aggregate.per_gb_p10),
-                per_gb_p25=_maybe_float(aggregate.per_gb_p25),
-                per_gb_median=_maybe_float(aggregate.per_gb_median),
-                per_gb_mean=_maybe_float(aggregate.per_gb_mean),
+                unit=aggregate.unit,
+                per_unit_min=_maybe_float(aggregate.per_unit_min),
+                per_unit_p10=_maybe_float(aggregate.per_unit_p10),
+                per_unit_p25=_maybe_float(aggregate.per_unit_p25),
+                per_unit_median=_maybe_float(aggregate.per_unit_median),
+                per_unit_mean=_maybe_float(aggregate.per_unit_mean),
                 capped=bool(capped),
                 min_seller_feedback=int(floor),
             )
@@ -562,15 +566,17 @@ def budget_view(session: Session) -> BudgetView:
 
 @dataclass(frozen=True)
 class SpecView:
-    """How a listing's capacity was decided, and how much to trust it.
+    """How a listing's spec was decided, and how much to trust it.
 
-    Shown beside every deal because a deal is only as good as its capacity parse:
-    reading "Lot of 4 x 32GB" as 32GB rather than 128GB manufactures a fourfold
-    bargain that does not exist.
+    Shown beside every deal because a deal is only as good as the parse under
+    it: reading "Lot of 4 x 32GB" as 32GB rather than 128GB manufactures a
+    fourfold bargain that does not exist, and reading the wrong model number
+    groups unlike goods into one cohort.
     """
 
     title_hash: str
     normalized_title: str
+    category: SpecCategory | None
     total_gb: int | None
     capacity_per_module_gb: int | None
     module_count: int | None
@@ -580,13 +586,45 @@ class SpecView:
     rank_org: str | None
     ecc: bool | None
     registered: bool | None
+    capacity_tb: float | None
+    storage_type: str | None
+    storage_iface: str | None
+    storage_form: str | None
+    product_model: str | None
     method: ExtractionMethod | None
     confidence: float | None
     corrected_by: str | None
 
     @property
+    def category_label(self) -> str:
+        if self.category is None:
+            return "uncategorized"
+        match self.category:
+            case SpecCategory.MEMORY:
+                return "memory"
+            case SpecCategory.STORAGE:
+                return "storage"
+            case SpecCategory.OTHER:
+                return "per-item"
+            case _:
+                assert_never(self.category)
+
+    @property
     def method_label(self) -> str:
         return extraction_method_label(self.method)
+
+    @property
+    def usable(self) -> bool:
+        """Whether the spec carries its own category's denominator."""
+        match self.category:
+            case None | SpecCategory.MEMORY:
+                return self.total_gb is not None and self.total_gb > 0
+            case SpecCategory.STORAGE:
+                return self.capacity_tb is not None and self.capacity_tb > 0
+            case SpecCategory.OTHER:
+                return bool(self.product_model and self.product_model.strip())
+            case _:
+                assert_never(self.category)
 
     @property
     def trusted(self) -> bool:
@@ -615,6 +653,7 @@ def _spec_view(spec: ItemSpec | None) -> SpecView | None:
     return SpecView(
         title_hash=spec.title_hash,
         normalized_title=spec.normalized_title,
+        category=spec.category,
         total_gb=spec.total_gb,
         capacity_per_module_gb=spec.capacity_per_module_gb,
         module_count=spec.module_count,
@@ -624,6 +663,11 @@ def _spec_view(spec: ItemSpec | None) -> SpecView | None:
         rank_org=spec.rank_org,
         ecc=spec.ecc,
         registered=spec.registered,
+        capacity_tb=_maybe_float(spec.capacity_tb),
+        storage_type=spec.storage_type,
+        storage_iface=spec.storage_iface,
+        storage_form=spec.storage_form,
+        product_model=spec.product_model,
         method=spec.method,
         confidence=_maybe_float(spec.confidence),
         corrected_by=spec.corrected_by,
@@ -635,8 +679,9 @@ class DealView:
     deal: Deal
     listing: Listing | None
     spec: SpecView | None
-    cohort_median_per_gb: float | None
-    cohort_min_per_gb: float | None
+    unit: PriceUnit | None
+    cohort_median_per_unit: float | None
+    cohort_min_per_unit: float | None
     # Derived at read time; written nowhere. A later sighting or verification
     # changes it by itself, which is the whole point of not storing it.
     availability: AvailabilityState = AvailabilityState.OPEN
@@ -644,8 +689,8 @@ class DealView:
     verified_at: datetime | None = None
 
     @property
-    def per_gb(self) -> float | None:
-        return _maybe_float(self.deal.per_gb)
+    def per_unit(self) -> float | None:
+        return _maybe_float(self.deal.per_unit)
 
     @property
     def cohort_p10(self) -> float:
@@ -730,11 +775,12 @@ def deal_feed(session: Session, *, include_dismissed: bool = False, limit: int =
                 spec=_spec_view(
                     specs.get(listing.title_hash) if listing is not None else None
                 ),
-                cohort_median_per_gb=(
-                    None if aggregate is None else _maybe_float(aggregate.per_gb_median)
+                unit=deal.unit,
+                cohort_median_per_unit=(
+                    None if aggregate is None else _maybe_float(aggregate.per_unit_median)
                 ),
-                cohort_min_per_gb=(
-                    None if aggregate is None else _maybe_float(aggregate.per_gb_min)
+                cohort_min_per_unit=(
+                    None if aggregate is None else _maybe_float(aggregate.per_unit_min)
                 ),
                 availability=availability(
                     last_seen_at=listing.last_seen_at if listing is not None else None,
@@ -770,8 +816,8 @@ class SpecWorkRow:
     def reason(self) -> str:
         if self.spec is None:
             return "no spec"
-        if self.spec.total_gb is None:
-            return "no capacity"
+        if not self.spec.usable:
+            return "no model" if self.spec.category is SpecCategory.OTHER else "no capacity"
         return "low confidence"
 
 
@@ -808,7 +854,7 @@ def spec_worklist(session: Session, limit: int = 100) -> list[SpecWorkRow]:
         view = _spec_view(spec)
         needs_attention = (
             view is None
-            or view.total_gb is None
+            or not view.usable
             or (view.method is not ExtractionMethod.MANUAL and not view.trusted)
         )
         if not needs_attention:
@@ -927,10 +973,29 @@ class Overview:
 
 
 def overview(session: Session) -> Overview:
+    # A title with no spec row at all, or a row whose category's denominator is
+    # missing, is unspecced for display purposes: it contributes to no market.
     unspecced = session.scalar(
         select(func.count(func.distinct(Listing.title_hash)))
         .outerjoin(ItemSpec, ItemSpec.title_hash == Listing.title_hash)
-        .where((ItemSpec.title_hash.is_(None)) | (ItemSpec.total_gb.is_(None)))
+        .where(
+            (ItemSpec.title_hash.is_(None))
+            | (
+                (ItemSpec.category.is_(None))
+                | (
+                    (ItemSpec.category == SpecCategory.MEMORY)
+                    & ItemSpec.total_gb.is_(None)
+                )
+                | (
+                    (ItemSpec.category == SpecCategory.STORAGE)
+                    & ItemSpec.capacity_tb.is_(None)
+                )
+                | (
+                    (ItemSpec.category == SpecCategory.OTHER)
+                    & ItemSpec.product_model.is_(None)
+                )
+            )
+        )
     )
     recent = [
         ScanRow(

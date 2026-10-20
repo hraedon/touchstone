@@ -24,15 +24,16 @@ router = APIRouter(prefix="/deals")
 
 def _band(view: views.DealView) -> charts.PriceBand | None:
     """The signature element, when there is enough recorded context to draw it."""
-    per_gb = view.per_gb
-    if per_gb is None or view.cohort_median_per_gb is None:
+    per_unit = view.per_unit
+    if per_unit is None or view.cohort_median_per_unit is None:
         return None
     return charts.price_band(
-        marked=per_gb,
+        marked=per_unit,
         p10=view.cohort_p10,
-        median=view.cohort_median_per_gb,
-        minimum=view.cohort_min_per_gb,
+        median=view.cohort_median_per_unit,
+        minimum=view.cohort_min_per_unit,
         n=view.deal.cohort_n,
+        unit=charts.unit_suffix(view.deal.unit),
     )
 
 

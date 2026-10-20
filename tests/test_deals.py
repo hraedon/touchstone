@@ -5,7 +5,15 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from touchstone.db.models import VerifyOutcome
-from touchstone.extract.cohort import UNSPECCED, CohortFields, cohort_key, is_unspecced
+from touchstone.extract.cohort import (
+    UNSPECCED,
+    CohortFields,
+    StorageFields,
+    cohort_key,
+    is_unspecced,
+    item_key,
+    storage_key,
+)
 from touchstone.extract.specs import DEAL_CONFIDENCE_FLOOR
 from touchstone.scan.deals import (
     MIN_COHORT_N,
@@ -72,19 +80,19 @@ class TestCohortKey:
 
 class TestScore:
     def test_further_below_p10_scores_higher(self) -> None:
-        cheap = score(per_gb=1.0, cohort_p10=2.0, cohort_median=3.0)
-        cheaper = score(per_gb=0.5, cohort_p10=2.0, cohort_median=3.0)
+        cheap = score(per_unit=1.0, cohort_p10=2.0, cohort_median=3.0)
+        cheaper = score(per_unit=0.5, cohort_p10=2.0, cohort_median=3.0)
         assert cheaper > cheap
 
     def test_scores_are_comparable_across_price_levels(self) -> None:
         """Normalizing by cohort spread is what makes a $2 gap at $3/GB comparable
         to a $20 gap at $30/GB."""
-        cheap_cohort = score(per_gb=1.0, cohort_p10=2.0, cohort_median=3.0)
-        dear_cohort = score(per_gb=10.0, cohort_p10=20.0, cohort_median=30.0)
+        cheap_cohort = score(per_unit=1.0, cohort_p10=2.0, cohort_median=3.0)
+        dear_cohort = score(per_unit=10.0, cohort_p10=20.0, cohort_median=30.0)
         assert cheap_cohort == dear_cohort
 
     def test_degenerate_cohort_does_not_divide_by_zero(self) -> None:
-        value = score(per_gb=1.0, cohort_p10=2.0, cohort_median=2.0)
+        value = score(per_unit=1.0, cohort_p10=2.0, cohort_median=2.0)
         assert value > 0
         assert value == value  # not NaN
 
@@ -94,7 +102,7 @@ class TestEvaluate:
         args: dict[str, object] = {
             "listing_id": "v1|1|0",
             "cohort_key": "gen=DDR4|cap=32",
-            "per_gb": 1.0,
+            "per_unit": 1.0,
             "cohort_p10": 2.0,
             "cohort_median": 3.0,
             "cohort_n": 10,
@@ -109,8 +117,8 @@ class TestEvaluate:
         assert candidate.listing_id == "v1|1|0"
 
     def test_at_or_above_p10_is_not_flagged(self) -> None:
-        assert evaluate(**self.base(per_gb=2.0)) is None  # type: ignore[arg-type]
-        assert evaluate(**self.base(per_gb=2.5)) is None  # type: ignore[arg-type]
+        assert evaluate(**self.base(per_unit=2.0)) is None  # type: ignore[arg-type]
+        assert evaluate(**self.base(per_unit=2.5)) is None  # type: ignore[arg-type]
 
     def test_thin_cohort_is_not_flagged(self) -> None:
         """A p10 over four listings is an artifact, not a distribution."""
@@ -120,7 +128,7 @@ class TestEvaluate:
     def test_low_confidence_spec_is_not_flagged_however_cheap(self) -> None:
         """A mis-parsed capacity produces a spectacular fake bargain. Cheapness is
         exactly the symptom of the bug, so it must not be the trigger."""
-        assert evaluate(**self.base(per_gb=0.01, confidence=0.5)) is None  # type: ignore[arg-type]
+        assert evaluate(**self.base(per_unit=0.01, confidence=0.5)) is None  # type: ignore[arg-type]
 
     def test_missing_confidence_is_not_treated_as_confident(self) -> None:
         assert evaluate(**self.base(confidence=None)) is None  # type: ignore[arg-type]
@@ -130,8 +138,8 @@ class TestEvaluate:
         candidate = evaluate(**self.base(confidence=0.1, manual=True))  # type: ignore[arg-type]
         assert candidate is not None
 
-    def test_no_per_gb_means_nothing_to_compare(self) -> None:
-        assert evaluate(**self.base(per_gb=None)) is None  # type: ignore[arg-type]
+    def test_no_per_unit_means_nothing_to_compare(self) -> None:
+        assert evaluate(**self.base(per_unit=None)) is None  # type: ignore[arg-type]
 
     def test_no_cohort_reference_means_no_flag(self) -> None:
         assert evaluate(**self.base(cohort_p10=None)) is None  # type: ignore[arg-type]
@@ -159,7 +167,7 @@ class TestMerelyCheapestIsNotADeal:
             evaluate(
                 listing_id="cheapest",
                 cohort_key="k",
-                per_gb=3.125,
+                per_unit=3.125,
                 cohort_p10=3.1406,
                 cohort_median=3.2031,
                 cohort_n=8,
@@ -172,7 +180,7 @@ class TestMerelyCheapestIsNotADeal:
         candidate = evaluate(
             listing_id="bargain",
             cohort_key="k",
-            per_gb=1.0,
+            per_unit=1.0,
             cohort_p10=2.575,
             cohort_median=3.22,
             cohort_n=9,
@@ -186,7 +194,7 @@ class TestMerelyCheapestIsNotADeal:
         at = evaluate(
             listing_id="at",
             cohort_key="k",
-            per_gb=1.0,
+            per_unit=1.0,
             cohort_p10=2.0,
             cohort_median=3.0,
             cohort_n=8,
@@ -195,7 +203,7 @@ class TestMerelyCheapestIsNotADeal:
         under = evaluate(
             listing_id="under",
             cohort_key="k",
-            per_gb=1.01,
+            per_unit=1.01,
             cohort_p10=2.0,
             cohort_median=3.0,
             cohort_n=8,
@@ -323,4 +331,70 @@ class TestAvailability:
                 newest_disappearance_at=self.at(3), verify_requested_at=self.at(2)
             )
             == "left_market"
+        )
+
+
+class TestStorageCohortKeys:
+    def test_the_full_tuple_makes_the_key(self) -> None:
+        assert (
+            storage_key(
+                StorageFields(
+                    storage_type="SSD",
+                    capacity_tb=3.84,
+                    storage_iface="NVMe",
+                    storage_form="U.2",
+                ),
+                "3000",
+            )
+            == "sto|type=SSD|cap=3.84|iface=NVMe|form=U.2|cond=3000"
+        )
+
+    def test_capacity_unknown_is_unspecced(self) -> None:
+        assert is_unspecced(storage_key(StorageFields(storage_type="SSD"), "3000"))
+
+    def test_decimal_capacities_keep_their_decimals(self) -> None:
+        assert "cap=3.84" in storage_key(StorageFields(capacity_tb=3.84), "3000")
+
+    def test_whole_terrabytes_do_not_render_as_decimals(self) -> None:
+        assert "cap=16" in storage_key(StorageFields(capacity_tb=16.0), "3000")
+
+    def test_interface_separates_substitutability(self) -> None:
+        sata = storage_key(
+            StorageFields(storage_type="SSD", capacity_tb=1.92, storage_iface="SATA"), "3000"
+        )
+        nvme = storage_key(
+            StorageFields(storage_type="SSD", capacity_tb=1.92, storage_iface="NVMe"), "3000"
+        )
+        assert sata != nvme
+
+    def test_drive_type_separates_ssd_from_hdd(self) -> None:
+        ssd = storage_key(StorageFields(storage_type="SSD", capacity_tb=16), "3000")
+        hdd = storage_key(StorageFields(storage_type="HDD", capacity_tb=16), "3000")
+        assert ssd != hdd
+
+
+class TestItemCohortKeys:
+    def test_the_model_is_the_key(self) -> None:
+        assert item_key("E810-XXVDA2", "3000") == "itm|model=E810-XXVDA2|cond=3000"
+
+    def test_separator_variants_of_one_model_collide(self) -> None:
+        assert item_key("E810-XXVDA2", "3000") == item_key("E810 XXVDA2", "3000")
+        assert item_key("E810-XXVDA2", "3000") == item_key("e810_xxvda2", "3000")
+        assert item_key("E810-XXVDA2", "3000") == item_key(" e810-xxvda2 ", "3000")
+
+    def test_variants_of_one_adapter_are_different_goods(self) -> None:
+        assert item_key("E810-XXVDA2", "3000") != item_key("E810-CQDA2", "3000")
+
+    def test_no_model_is_unspecced(self) -> None:
+        assert is_unspecced(item_key(None, "3000"))
+        assert is_unspecced(item_key("   ", "3000"))
+
+
+class TestMemoryKeyStability:
+    def test_the_memory_format_is_frozen_byte_for_byte(self) -> None:
+        """Historical aggregates carry this exact string; any change splits every
+        memory series in two and reads as a market move."""
+        assert (
+            cohort_key(FULL, "3000")
+            == "gen=DDR4|ff=RDIMM|ecc=y|reg=y|cap=32|mt=2400|rank=2Rx4|cond=3000"
         )

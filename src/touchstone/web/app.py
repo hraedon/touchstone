@@ -34,6 +34,8 @@ from starlette.middleware.sessions import SessionMiddleware
 from touchstone.db.session import make_engine, make_session_factory
 from touchstone.scan.aggregate import MIN_COHORT_N
 from touchstone.scan.deals import MIN_SCORE
+from touchstone.web.charts import unit_price_label as charts_unit_price_label
+from touchstone.web.charts import unit_suffix as charts_unit_suffix
 from touchstone.web.routes import router
 
 WEB_DIR = Path(__file__).resolve().parent
@@ -120,7 +122,7 @@ def _money(value: float | None, places: int = 2) -> str:
     return f"{value:,.{places}f}"
 
 
-def _per_gb(value: float | None) -> str:
+def _per_unit(value: float | None) -> str:
     return "—" if value is None else f"{value:,.3f}"
 
 
@@ -153,10 +155,12 @@ def _yes_no(value: bool | None) -> str:
 def build_templates() -> Jinja2Templates:
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     templates.env.filters["money"] = _money
-    templates.env.filters["per_gb"] = _per_gb
+    templates.env.filters["per_unit"] = _per_unit
     templates.env.filters["stamp"] = _stamp
     templates.env.filters["since"] = _since
     templates.env.filters["yes_no"] = _yes_no
+    templates.env.globals["unit_suffix"] = charts_unit_suffix
+    templates.env.globals["unit_price_label"] = charts_unit_price_label
     templates.env.globals["MIN_COHORT_N"] = MIN_COHORT_N
     templates.env.globals["MIN_SCORE"] = MIN_SCORE
     return templates

@@ -85,11 +85,11 @@ def seeded(session: Session) -> Query:
                 price_p25=100.0,
                 price_median=110.0 + index,
                 price_mean=112.0,
-                per_gb_min=2.8,
-                per_gb_p10=2.9,
-                per_gb_p25=3.1,
-                per_gb_median=3.44,
-                per_gb_mean=3.5,
+                per_unit_min=2.8,
+                per_unit_p10=2.9,
+                per_unit_p25=3.1,
+                per_unit_median=3.44,
+                per_unit_mean=3.5,
             )
         )
 
@@ -120,7 +120,7 @@ def _snapshot(session: Session) -> list[tuple[object, ...]]:
             float(row.price_p25),
             float(row.price_median),
             float(row.price_mean),
-            None if row.per_gb_median is None else float(row.per_gb_median),
+            None if row.per_unit_median is None else float(row.per_unit_median),
         )
         for row in session.scalars(select(ScanAggregate).order_by(ScanAggregate.id))
     ]
@@ -237,7 +237,7 @@ class TestProtectedListings:
                 scan_id=scan.id,
                 cohort_key=COHORT,
                 total_cost=105.0,
-                per_gb=3.28,
+                per_unit=3.28,
                 cohort_p10=3.5,
                 cohort_n=17,
                 score=1.4,
@@ -263,7 +263,7 @@ class TestProtectedListings:
                 scan_id=scan.id,
                 cohort_key=COHORT,
                 total_cost=105.0,
-                per_gb=3.28,
+                per_unit=3.28,
                 cohort_p10=3.5,
                 cohort_n=17,
                 score=1.4,
@@ -385,7 +385,7 @@ class TestConcurrentChangesDuringAPrune:
                     scan_id=scan.id,
                     cohort_key=COHORT,
                     total_cost=105.0,
-                    per_gb=3.28,
+                    per_unit=3.28,
                     cohort_p10=3.5,
                     cohort_n=17,
                     score=1.4,

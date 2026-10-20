@@ -1,8 +1,9 @@
-"""Correcting the capacity parse.
+"""Correcting a spec parse.
 
-The single most consequential field touchstone infers is total capacity, because
-$/GB divides by it. A fourfold error there both invents a spectacular bargain and
-poisons the cohort every other listing is scored against. So correction is a
+The most consequential fields touchstone infers are the ones prices normalize by:
+capacity for memory and storage, the model for per-item goods. A fourfold error
+there both invents a spectacular bargain and poisons the cohort every other
+listing is scored against. So correction is a
 first-class screen, and the worklist is ordered by how many listings share a title:
 an hour spent on a template used by two hundred listings moves two hundred listings.
 
@@ -16,6 +17,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Form, Request
 
+from touchstone.db.models import SpecCategory
 from touchstone.extract.runner import correct_spec
 from touchstone.extract.specs import SpecCandidate
 from touchstone.web import views
@@ -48,6 +50,17 @@ def _tristate(raw: str) -> bool | None:
 def _optional_text(raw: str) -> str | None:
     stripped = raw.strip()
     return stripped or None
+
+
+def _optional_float(raw: str) -> float | None:
+    stripped = raw.strip()
+    return float(stripped) if stripped else None
+
+
+def _category(raw: str) -> SpecCategory | None:
+    """The form's category select; empty means leave it unset."""
+    stripped = raw.strip().lower()
+    return SpecCategory(stripped) if stripped else None
 
 
 @router.get("", name="spec_worklist")
@@ -85,6 +98,12 @@ def spec_correct(
     rank_org: Annotated[str, Form()] = "",
     ecc: Annotated[str, Form()] = "",
     registered: Annotated[str, Form()] = "",
+    category: Annotated[str, Form()] = "",
+    capacity_tb: Annotated[str, Form()] = "",
+    storage_type: Annotated[str, Form()] = "",
+    storage_iface: Annotated[str, Form()] = "",
+    storage_form: Annotated[str, Form()] = "",
+    product_model: Annotated[str, Form()] = "",
     corrected_by: Annotated[str, Form()] = "",
 ) -> Any:
     spec, title, listing_count = views.spec_detail(session, title_hash)
@@ -98,6 +117,7 @@ def spec_correct(
 
     try:
         candidate = SpecCandidate(
+            category=_category(category),
             capacity_per_module_gb=_optional_int(capacity_per_module_gb),
             module_count=_optional_int(module_count),
             total_gb=_optional_int(total_gb),
@@ -107,11 +127,19 @@ def spec_correct(
             rank_org=_optional_text(rank_org),
             ecc=_tristate(ecc),
             registered=_tristate(registered),
+            capacity_tb=_optional_float(capacity_tb),
+            storage_type=_optional_text(storage_type),
+            storage_iface=_optional_text(storage_iface),
+            storage_form=_optional_text(storage_form),
+            product_model=_optional_text(product_model),
             confidence=1.0,
             notes="manual correction",
         )
     except ValueError:
-        problems.append("Capacity, module count, total and speed must be whole numbers.")
+        problems.append(
+            "Capacity, module count, total and speed must be whole numbers; "
+            "capacity in TB may be decimal."
+        )
         candidate = SpecCandidate()
 
     if not problems:

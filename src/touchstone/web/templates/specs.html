@@ -2,11 +2,11 @@
 {% block title %}touchstone — specs{% endblock %}
 {% block content %}
 <h1>Capacity corrections</h1>
-<p class="ts-sub">Titles whose capacity is unknown or weakly read, most-shared first.</p>
+<p class="ts-sub">Titles whose spec is missing, incomplete, or weakly read, most-shared first.</p>
 
 <div class="ts-preamble">
   <strong>Capacity is the field everything else divides by.</strong> A title read as
-  one 32 GB module when it is a lot of four is a fourfold error in $/GB — it invents
+  one 32 GB module when it is a lot of four is a fourfold error in the normalized price — it invents
   a spectacular bargain and drags down the cohort reference every other listing is
   scored against. Correcting the most-shared titles first is deliberate: one
   correction to a template used by two hundred listings moves two hundred listings.
@@ -16,7 +16,7 @@
 
 <div class="ts-panel">
   {% if not rows %}
-    <p class="ts-panel-note">Nothing needs attention: every observed title has a capacity read at or above the confidence floor.</p>
+    <p class="ts-panel-note">Nothing needs attention: every observed title has a spec read at or above the confidence floor.</p>
   {% else %}
   <div class="ts-scroll">
   <table class="ts-table">

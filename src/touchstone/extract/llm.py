@@ -30,6 +30,7 @@ from typing import Any
 
 import httpx
 
+from touchstone.db.models import SpecCategory
 from touchstone.extract.specs import SpecCandidate, plausible
 
 log = logging.getLogger("touchstone.extract.llm")
@@ -45,12 +46,49 @@ LLM_CONFIDENCE = 0.8
 
 _FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.MULTILINE)
 
-PROMPT = """\
-Extract memory module specifications from this eBay listing title.
+def _as_float(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
 
-Return ONLY a JSON object with these keys (use null when the title does not say):
+
+def _as_category(value: Any) -> SpecCategory | None:
+    if isinstance(value, str):
+        try:
+            return SpecCategory(value.strip().lower())
+        except ValueError:
+            return None
+    return None
+
+
+# The prompt is a versioned contract in prose only: there is no schema machinery
+# here, so a field list change must be paired with the cache reasoning in
+# extract/runner.py — failed extractions store nothing and retry, so a new
+# prompt reaches exactly the titles the old one could not read.
+PROMPT = """\
+Extract product specifications from this eBay listing title.
+
+First classify the listing into exactly one category:
+  memory    RAM modules
+  storage   SSDs and hard drives
+  other     anything else with an identifiable model/part number
+
+Return ONLY a JSON object. Always include "category". Fill in the field group
+for that category and set the other groups' keys to null.
+
+Common keys (null when the title does not say):
+  category              "memory" | "storage" | "other"
+  module_count          integer, how many units are included (lots included)
+
+For category "memory":
   capacity_per_module_gb  integer, capacity of ONE module in GB
-  module_count            integer, how many modules are included
   total_gb                integer, capacity_per_module_gb * module_count
   ddr_gen                 "DDR3" | "DDR4" | "DDR5" | null
   speed_mt                integer, MT/s (PC4-19200 and PC4-2400 both mean 2400)
@@ -59,11 +97,26 @@ Return ONLY a JSON object with these keys (use null when the title does not say)
   ecc                     true | false | null
   registered              true | false | null
 
+For category "storage":
+  capacity_tb              number, capacity of ONE unit in TB, decimal is exact
+                           (480GB means 0.48; 3.84TB stays 3.84)
+  storage_type             "SSD" | "HDD" | null
+  storage_iface            "NVMe" | "SATA" | "SAS" | null
+  storage_form             "2.5" | "3.5" | "U.2" | "M.2" | null
+
+For category "other":
+  product_model            the canonical model/part number, hyphenated, uppercase,
+                           brand prefix included (e.g. "E810-XXVDA2", "X710-DA2");
+                           null when no model can be read from the title
+
 Rules:
 - "Lot of 4 x 32GB" means module_count 4, capacity_per_module_gb 32, total_gb 128.
 - "2Rx4" is a rank code, NOT a multiplier.
 - A speed (2133, 2400, 2666, 3200) is never a capacity.
+- For "other", prefer the manufacturer's model string over OEM part numbers when
+  both appear; keep internal hyphenation ("E810-XXVDA2", not "E810 XXVDA2").
 - If the title contradicts itself, return null for the capacity fields.
+- If nothing identifies the good, return category "other" with product_model null.
 
 Title: {title}
 """
@@ -123,6 +176,9 @@ def parse_model_output(raw: str) -> SpecCandidate | None:
     Returns None rather than a partially-trusted candidate: a reading that fails the
     range check is not evidence of anything, and storing it would put a confident
     wrong answer where a known gap belongs.
+
+    A missing or unrecognized category defaults to the memory ranges — the shape
+    every pre-category response had — and ``plausible()`` still applies.
     """
     try:
         payload = json.loads(_strip_fences(raw))
@@ -132,9 +188,11 @@ def parse_model_output(raw: str) -> SpecCandidate | None:
     if not isinstance(payload, dict):
         return None
 
+    category = _as_category(payload.get("category"))
     candidate = SpecCandidate(
-        capacity_per_module_gb=_as_int(payload.get("capacity_per_module_gb")),
+        category=category,
         module_count=_as_int(payload.get("module_count")),
+        capacity_per_module_gb=_as_int(payload.get("capacity_per_module_gb")),
         total_gb=_as_int(payload.get("total_gb")),
         ddr_gen=_as_str(payload.get("ddr_gen")),
         speed_mt=_as_int(payload.get("speed_mt")),
@@ -142,13 +200,20 @@ def parse_model_output(raw: str) -> SpecCandidate | None:
         rank_org=_as_str(payload.get("rank_org")),
         ecc=_as_bool(payload.get("ecc")),
         registered=_as_bool(payload.get("registered")),
+        capacity_tb=_as_float(payload.get("capacity_tb")),
+        storage_type=_as_str(payload.get("storage_type")),
+        storage_iface=_as_str(payload.get("storage_iface")),
+        storage_form=_as_str(payload.get("storage_form")),
+        product_model=_as_str(payload.get("product_model")),
         confidence=LLM_CONFIDENCE,
         notes="llm",
     )
 
-    if candidate.total_gb is None:
-        # The model declined to commit, which the prompt explicitly permits for a
-        # self-contradicting title. That is a useful answer, but not a specced one.
+    if not candidate.usable:
+        # The model declined to commit on the one field the category's
+        # normalization hangs off, which the prompt explicitly permits for a
+        # self-contradicting or unidentifiable title. That is a useful answer,
+        # but not a specced one.
         return None
     if not plausible(candidate):
         log.warning("model output failed the range check; discarding")

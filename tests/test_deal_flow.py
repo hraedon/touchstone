@@ -6,6 +6,7 @@ the product actually answers.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 import pytest
@@ -13,9 +14,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from tests.fake_ebay import FakeEbay, Generation, item
-from touchstone.db.models import Deal, ItemSpec, Query, ScanAggregate, VerifyOutcome
+from tests.test_extract_runner import FakeUmans
+from touchstone.db.models import Deal, ItemSpec, PriceUnit, Query, ScanAggregate, VerifyOutcome
 from touchstone.ebay.budget import BudgetGuard
 from touchstone.ebay.client import Credentials, EbayClient
+from touchstone.extract.llm import UmansExtractor
 from touchstone.extract.runner import run_extraction
 from touchstone.scan.runner import ScanResult, run_scan
 from touchstone.scan.verify import run_verification
@@ -70,8 +73,8 @@ def test_a_planted_bargain_is_flagged_and_nothing_else_is(
     assert second.deals == 1
     (deal,) = session.scalars(select(Deal)).all()
     assert deal.listing_id == "v1|bargain|0"
-    assert deal.per_gb is not None
-    assert float(deal.per_gb) == pytest.approx(1.0)  # $32 / 32GB
+    assert deal.per_unit is not None
+    assert float(deal.per_unit) == pytest.approx(1.0)  # $32 / 32GB
     assert deal.cohort_n == 9
 
 
@@ -235,7 +238,7 @@ def test_unspecced_listings_land_in_their_own_cohort(
     assert session.scalars(select(Deal)).all() == []
 
 
-def test_per_gb_is_recorded_on_aggregates_once_specs_exist(
+def test_per_unit_is_recorded_on_aggregates_once_specs_exist(
     session: Session, query: Query
 ) -> None:
     fake = FakeEbay(generations=[Generation(items=market(n=6, price=96.0))])
@@ -251,9 +254,9 @@ def test_per_gb_is_recorded_on_aggregates_once_specs_exist(
         select(ScanAggregate).order_by(ScanAggregate.id.desc())
     ).all()
     latest = aggregates[0]
-    assert latest.per_gb_median is not None
+    assert latest.per_unit_median is not None
     # ~$96-101 over 32GB
-    assert 2.9 < float(latest.per_gb_median) < 3.3
+    assert 2.9 < float(latest.per_unit_median) < 3.3
 
 
 def test_extraction_covers_the_titles_seen(session: Session, query: Query) -> None:
@@ -271,3 +274,74 @@ def test_extraction_covers_the_titles_seen(session: Session, query: Query) -> No
     spec = session.scalars(select(ItemSpec)).one()
     assert spec.total_gb == 32
     assert spec.form_factor == "RDIMM"
+
+
+SSD_TITLE = "Micron 7450 PRO 3.84TB U.2 NVMe Enterprise SSD"
+E810_TITLE = "Intel E810-XXVDA2 25GbE Dual Port PCI-E Network Adapter"
+
+
+def ssd_market(n: int = 8, price: float = 180.0) -> list[dict[str, object]]:
+    return [
+        item(f"v1|ssd{i}|0", price=price + i, title=SSD_TITLE, seller=f"seller_{i}")
+        for i in range(n)
+    ]
+
+
+def e810_market(n: int = 8, price: float = 450.0) -> list[dict[str, object]]:
+    return [
+        item(f"v1|nic{i}|0", price=price + i, title=E810_TITLE, seller=f"seller_{i}")
+        for i in range(n)
+    ]
+
+
+def test_a_planted_cheap_ssd_is_flagged_in_a_per_tb_cohort(
+    session: Session, query: Query
+) -> None:
+    listings = ssd_market(n=8, price=180.0)
+    listings.append(item("v1|cheapssd|0", price=60.0, title=SSD_TITLE, seller="cheap_seller"))
+
+    fake = FakeEbay(generations=[Generation(items=listings)])
+    url = fake.start()
+    try:
+        scan(session, url, query)
+        run_extraction(session, extractor=None)
+        result = scan(session, url, query)
+    finally:
+        fake.stop()
+
+    assert result.deals == 1
+    (deal,) = session.scalars(select(Deal)).all()
+    assert deal.unit == PriceUnit.TB
+    assert deal.cohort_key.startswith("sto|type=SSD|cap=3.84|iface=NVMe|form=U.2")
+    assert float(deal.per_unit) == pytest.approx(60.0 / 3.84, rel=1e-3)
+
+
+def test_a_planted_cheap_e810_is_flagged_in_a_model_cohort(
+    session: Session, query: Query
+) -> None:
+    """The per-item path: no regex can read a part number, so the model does."""
+    listings = e810_market(n=8, price=450.0)
+    listings.append(item("v1|cheapnic|0", price=180.0, title=E810_TITLE, seller="cheap_seller"))
+
+    fake = FakeEbay(generations=[Generation(items=listings)])
+    url = fake.start()
+    llm = FakeUmans(replies=[json.dumps(
+        {"category": "other", "product_model": "E810-XXVDA2", "module_count": 1}
+    )])
+    llm_url = llm.start()
+    try:
+        scan(session, url, query)
+        with UmansExtractor(api_key="key", base_url=llm_url) as extractor:
+            run_extraction(session, extractor=extractor)
+        result = scan(session, url, query)
+    finally:
+        fake.stop()
+        llm.stop()
+
+    assert result.deals == 1
+    (deal,) = session.scalars(select(Deal)).all()
+    assert deal.unit == PriceUnit.ITEM
+    assert deal.cohort_key == "itm|model=E810-XXVDA2|cond=3000"
+    # Per item, the normalized price IS the delivered price.
+    assert float(deal.per_unit) == pytest.approx(180.0)
+    assert deal.cohort_n == 9
