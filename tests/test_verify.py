@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from tests.factories import make_listing, make_query, make_scan
 from tests.fake_ebay import FakeEbay, Generation
-from touchstone.db.models import Deal, Query, VerifyOutcome
+from touchstone.db.models import Deal, ExtractionMethod, ItemSpec, Query, VerifyOutcome
 from touchstone.ebay.budget import BudgetGuard
 from touchstone.ebay.client import Credentials, EbayClient, ItemAvailability
 from touchstone.scan.schedule import run_tick
@@ -205,3 +205,60 @@ class TestGetItemMapping:
             client.get_item("v1|404|0")
             assert client.calls_made == 2
             assert fake.get_item_calls == ["v1|1|0", "v1|404|0"]
+
+
+class TestEnumStorageVocabulary:
+    """The new enums persist their documented values, not their member names.
+
+    The migrations backfill and declare lowercase ('gb', 'memory',
+    'available'); the ORM must write the same vocabulary or every row the
+    migration wrote becomes unreadable — a defect the live deploy of the
+    categories round caught and this test now pins.
+    """
+
+    def test_the_new_enums_store_values_not_names(self, session: Session) -> None:
+        from sqlalchemy import text
+
+        from touchstone.db.models import Deal as DealRow
+        from touchstone.db.models import PriceUnit as PU
+        from touchstone.db.models import SpecCategory as SC
+        from touchstone.db.models import VerifyOutcome as VO
+
+        query = make_query(session, name="vocab-q")
+        scan = make_scan(session, query)
+        listing = make_listing(session, "v1|vocab|0", "32GB 2Rx4 PC4-2400T ECC REG")
+        session.add(
+            ItemSpec(
+                category=SC.MEMORY,
+                title_hash=listing.title_hash,
+                normalized_title="t",
+                total_gb=32,
+                method=ExtractionMethod.REGEX,
+                confidence=0.9,
+            )
+        )
+        session.add(
+            DealRow(
+                listing_id=listing.item_id,
+                scan_id=scan.id,
+                cohort_key="k",
+                total_cost=10.0,
+                per_unit=1.2,
+                unit=PU.GB,
+                verify_outcome=VO.AVAILABLE,
+                verified_at=datetime.now(UTC),
+                cohort_p10=1.6,
+                cohort_n=5,
+                score=1.0,
+            )
+        )
+        session.flush()
+        raw_unit = session.execute(
+            text("select unit, verify_outcome from deal where listing_id = 'v1|vocab|0'")
+        ).one()
+        raw_category = session.execute(
+            text("select category from item_spec where title_hash = :h"),
+            {"h": listing.title_hash},
+        ).scalar_one()
+        assert raw_unit == ("gb", "available")
+        assert raw_category == "memory"

@@ -105,6 +105,18 @@ class PriceUnit(enum.StrEnum):
     ITEM = "item"
 
 
+def _enum_values(enum: type[enum.Enum]) -> list[str]:
+    """Persist the documented value, not the member name.
+
+    The category/unit/outcome migrations declare and backfill the lowercase
+    wire vocabulary ('memory', 'gb', 'available'); without this the ORM would
+    write member NAMES and every migrated row would become unreadable. The
+    legacy enums (ScanStatus and friends) have stored names since the initial
+    schema and are deliberately left that way.
+    """
+    return [member.value for member in enum]
+
+
 def unit_suffix(unit: PriceUnit | None) -> str:
     """What a normalized price was divided by, for display beside a number.
 
@@ -349,7 +361,7 @@ class ScanAggregate(Base):
     # on a member): no denominator, no normalized price. The unit records what
     # the numbers were divided by at write time and is never recomputed.
     unit: Mapped[PriceUnit | None] = mapped_column(
-        Enum(PriceUnit, native_enum=False, length=8)
+        Enum(PriceUnit, values_callable=_enum_values, native_enum=False, length=8)
     )
     per_unit_min: Mapped[float | None] = mapped_column(Numeric(12, 4))
     per_unit_p10: Mapped[float | None] = mapped_column(Numeric(12, 4))
@@ -386,7 +398,7 @@ class ItemSpec(Base):
     normalized_title: Mapped[str] = mapped_column(String(500))
 
     category: Mapped[SpecCategory | None] = mapped_column(
-        Enum(SpecCategory, native_enum=False, length=16)
+        Enum(SpecCategory, values_callable=_enum_values, native_enum=False, length=16)
     )
 
     # memory
@@ -434,7 +446,7 @@ class Deal(Base):
     total_cost: Mapped[float] = mapped_column(Numeric(12, 2))
     per_unit: Mapped[float | None] = mapped_column(Numeric(12, 4))
     unit: Mapped[PriceUnit | None] = mapped_column(
-        Enum(PriceUnit, native_enum=False, length=8)
+        Enum(PriceUnit, values_callable=_enum_values, native_enum=False, length=8)
     )
     cohort_p10: Mapped[float] = mapped_column(Numeric(12, 4))
     cohort_n: Mapped[int] = mapped_column(Integer)
@@ -451,7 +463,7 @@ class Deal(Base):
     # time from the disappearance series and written nowhere.
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     verify_outcome: Mapped[VerifyOutcome | None] = mapped_column(
-        Enum(VerifyOutcome, native_enum=False, length=32)
+        Enum(VerifyOutcome, values_callable=_enum_values, native_enum=False, length=32)
     )
 
     __table_args__ = (UniqueConstraint("listing_id", name="uq_deal_listing"),)
