@@ -26,7 +26,7 @@ from touchstone.extract.runner import run_extraction
 from touchstone.scan.retention import DEFAULT_RETENTION_DAYS, prune
 from touchstone.scan.runner import ScanSkipped, run_scan
 from touchstone.scan.schedule import run_tick, writer_lock
-from touchstone.scan.verify import DEFAULT_LIMIT, run_verification
+from touchstone.scan.verify import DEFAULT_AUTO_LIMIT, DEFAULT_LIMIT, run_verification
 
 log = logging.getLogger("touchstone")
 
@@ -252,7 +252,7 @@ def cmd_extract(args: argparse.Namespace) -> int:
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
-    """Answer queued availability checks now, rather than on the next pass.
+    """Answer queued availability checks now, then any unseen flags that are due.
 
     Takes the same writer lock the scanner takes: it writes deal rows and the
     budget ledger, and a manual run overlapping a pass could double-answer one
@@ -266,11 +266,16 @@ def cmd_verify(args: argparse.Namespace) -> int:
             return 0
         with EbayClient(credentials=_credentials()) as client:
             guard = BudgetGuard(session, client)
-            result = run_verification(session, client, guard, limit=args.limit)
+            result = run_verification(
+                session, client, guard, limit=args.limit, auto_limit=args.auto_limit
+            )
         session.commit()
         guard.committed()
 
-    print(f"{result.verified} verified, {result.left_queued} left queued")
+    print(
+        f"{result.verified} verified ({result.automatic} unasked), "
+        f"{result.left_queued} left queued"
+    )
     return 0
 
 
@@ -363,6 +368,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     verify.add_argument(
         "--limit", type=int, default=DEFAULT_LIMIT, help="max verifications per run"
+    )
+    verify.add_argument(
+        "--auto-limit",
+        type=int,
+        default=DEFAULT_AUTO_LIMIT,
+        help="max unasked checks of unseen flags per run (0 disables them)",
     )
     verify.set_defaults(func=cmd_verify)
 

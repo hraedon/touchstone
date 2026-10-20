@@ -64,6 +64,27 @@ def item(
     return node
 
 
+def item_detail(
+    *, stock: str | None = "IN_STOCK", end_date: str | None = None
+) -> dict[str, Any]:
+    """The availability-bearing part of a getItem body, in the observed shape.
+
+    The real Item resource has no listing-status field. An ended listing keeps
+    answering 200 with ``itemEndDate`` in the past, and its stock estimate can
+    say ``OUT_OF_STOCK`` (the quantity went) or still ``IN_STOCK`` (it ended
+    unsold); a live good-'til-cancelled listing carries no end date at all.
+    ``stock=None`` omits the estimate entirely.
+    """
+    node: dict[str, Any] = {}
+    if stock is not None:
+        node["estimatedAvailabilities"] = [
+            {"deliveryOptions": ["SHIP_TO_HOME"], "estimatedAvailabilityStatus": stock}
+        ]
+    if end_date is not None:
+        node["itemEndDate"] = end_date
+    return node
+
+
 @dataclass
 class Generation:
     """One snapshot of the marketplace, plus what eBay claims the total is.
@@ -93,10 +114,10 @@ class FakeEbay:
     search_calls: int = field(default=0, init=False)
     rate_limit_calls: int = field(default=0, init=False)
     filters_seen: list[str] = field(default_factory=list, init=False)
-    # What GET /buy/browse/v1/item/{id} serves, keyed by item id. An id absent
-    # from the mapping gets the 404 the real API gives once it stops returning
-    # a listing — which is the observable meaning of "ended".
-    item_status: dict[str, str] = field(default_factory=dict, init=False)
+    # What GET /buy/browse/v1/item/{id} serves (see ``item_detail``), keyed by
+    # item id. An id absent from the mapping gets the 404 the real API gives
+    # once it stops returning a listing at all.
+    item_details: dict[str, dict[str, Any]] = field(default_factory=dict, init=False)
     # Ids the item endpoint should fail on with a 500, to exercise the unknown
     # outcome: a transient failure is not evidence that a listing ended.
     item_endpoint_fails: set[str] = field(default_factory=set, init=False)
@@ -180,8 +201,8 @@ class FakeEbay:
                     if item_id in fake.item_endpoint_fails:
                         self._send(500, {"error": "transient upstream failure"})
                         return
-                    status = fake.item_status.get(item_id)
-                    if status is None:
+                    detail = fake.item_details.get(item_id)
+                    if detail is None:
                         self._send(
                             404,
                             {
@@ -195,13 +216,13 @@ class FakeEbay:
                         )
                         return
                     # The real getItem response carries the seller; the fake
-                    # keeps it so the client's read-only-the-status posture is
-                    # exercised against a response that definitely has one.
+                    # keeps it so the client's read-only-the-availability posture
+                    # is exercised against a response that definitely has one.
                     self._send(
                         200,
                         {
                             "itemId": item_id,
-                            "listing": {"status": status},
+                            **detail,
                             "seller": {"username": "seller_one"},
                         },
                     )

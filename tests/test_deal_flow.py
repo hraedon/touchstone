@@ -13,7 +13,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from tests.fake_ebay import FakeEbay, Generation, item
+from tests.fake_ebay import FakeEbay, Generation, item, item_detail
 from tests.test_extract_runner import FakeUmans
 from touchstone.db.models import Deal, ItemSpec, PriceUnit, Query, ScanAggregate, VerifyOutcome
 from touchstone.ebay.budget import BudgetGuard
@@ -110,7 +110,10 @@ def test_a_deal_retires_when_its_listing_leaves_the_market(
             Generation(items=market(n=8, price=100.0)),
         ]
     )
-    fake.item_status["v1|bargain|0"] = "ENDED"
+    # Ended unsold: the stock estimate still says IN_STOCK; the end date does not.
+    fake.item_details["v1|bargain|0"] = item_detail(
+        stock="IN_STOCK", end_date="2026-01-01T00:00:00.000Z"
+    )
     url = fake.start()
     try:
         scan(session, url, query)

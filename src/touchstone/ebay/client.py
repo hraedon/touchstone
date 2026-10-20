@@ -21,6 +21,7 @@ import enum
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote
 
@@ -126,10 +127,10 @@ class RateLimit:
 class ItemAvailability(enum.StrEnum):
     """What one ``getItem`` call reported about a listing.
 
-    ``unavailable`` means the API no longer returns the listing, which is what
-    the shopper-facing Browse API reports for ended ones. Ended, sold, and
-    purged are not distinguishable from outside, and this enum does not claim
-    to tell them apart. ``unknown`` is a failure or an ambiguous response —
+    ``unavailable`` means the listing cannot be bought: its end date has
+    passed, its stock estimate is out, or the API no longer returns it at all.
+    Ended, sold, and purged are not distinguishable from outside, and this enum
+    does not claim to tell them apart. ``unknown`` is a failure or an ambiguous response —
     not evidence of anything.
     """
 
@@ -138,24 +139,51 @@ class ItemAvailability(enum.StrEnum):
     UNKNOWN = "unknown"
 
 
-# Listing statuses the item endpoint can return that mean the listing is no
-# longer live. Statuses are matched case-insensitively; anything unrecognized
-# maps to UNKNOWN rather than being guessed at.
-_ENDED_STATUSES = frozenset({"COMPLETED", "CANCELED"})
+# ``estimatedAvailabilities[].estimatedAvailabilityStatus`` values. Matched
+# case-insensitively; anything unrecognized maps to UNKNOWN rather than being
+# guessed at.
+_IN_STOCK_STATUSES = frozenset({"IN_STOCK", "LIMITED_STOCK"})
+_OUT_OF_STOCK_STATUS = "OUT_OF_STOCK"
 
 
-def parse_item_availability(status: object) -> ItemAvailability | None:
-    """Map an Item's ``listing.status`` to an outcome, or None if unrecognized.
-
-    None — absent, empty, or a status this parser has never seen — must be
-    treated by the caller as unknown, never guessed.
-    """
-    if not isinstance(status, str):
+def _parse_api_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
         return None
-    upper = status.strip().upper()
-    if upper == "ACTIVE":
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    # A naive stamp has no defensible zone; refusing it beats guessing one.
+    return parsed if parsed.tzinfo is not None else None
+
+
+def parse_item_availability(item: object, *, now: datetime) -> ItemAvailability | None:
+    """Map a getItem response body to an outcome, or None if it says nothing usable.
+
+    The Item resource has no listing-status field. What it does carry, observed
+    against the live API: an ended listing keeps answering 200 for weeks, with
+    ``itemEndDate`` in the past, and its ``estimatedAvailabilityStatus`` may be
+    ``OUT_OF_STOCK`` (the quantity went) or still ``IN_STOCK`` (it ended unsold).
+    So the end date is read first and outranks the stock estimate; a live
+    good-'til-cancelled listing carries no end date at all.
+
+    None — no end date in the past and no stock status this parser recognizes —
+    must be treated by the caller as unknown, never guessed.
+    """
+    if not isinstance(item, dict):
+        return None
+    ended_at = _parse_api_timestamp(item.get("itemEndDate"))
+    if ended_at is not None and ended_at <= now:
+        return ItemAvailability.UNAVAILABLE
+
+    statuses: set[str] = set()
+    for entry in item.get("estimatedAvailabilities") or []:
+        status = entry.get("estimatedAvailabilityStatus") if isinstance(entry, dict) else None
+        if isinstance(status, str) and status.strip():
+            statuses.add(status.strip().upper())
+    if statuses & _IN_STOCK_STATUSES:
         return ItemAvailability.AVAILABLE
-    if upper in _ENDED_STATUSES or upper.startswith("ENDED"):
+    if statuses == {_OUT_OF_STOCK_STATUS}:
         return ItemAvailability.UNAVAILABLE
     return None
 
@@ -430,9 +458,9 @@ class EbayClient:
         """One Browse ``getItem`` call. Costs exactly one unit of the daily budget.
 
         Never raises: the three outcomes are the whole contract. The response
-        carries seller data; this boundary reads the listing status and
-        discards everything else, exactly as the search path drops the
-        username.
+        carries seller data; this boundary reads the end date and the stock
+        estimate and discards everything else, exactly as the search path
+        drops the username.
         """
         log.info("browse get_item: item_id=%s", item_id)
         try:
@@ -449,12 +477,14 @@ class EbayClient:
         if resp.status_code != 200:
             log.warning("get_item failed: %s %s", resp.status_code, resp.text[:200])
             return ItemAvailability.UNKNOWN
-        listing = resp.json().get("listing")
-        outcome = parse_item_availability(
-            listing.get("status") if isinstance(listing, dict) else None
-        )
+        try:
+            body = resp.json()
+        except ValueError:
+            log.warning("get_item response was not JSON")
+            return ItemAvailability.UNKNOWN
+        outcome = parse_item_availability(body, now=datetime.now(UTC))
         if outcome is None:
-            log.warning("get_item response carried no recognizable listing status")
+            log.warning("get_item response carried no end date or recognizable stock status")
             return ItemAvailability.UNKNOWN
         return outcome
 

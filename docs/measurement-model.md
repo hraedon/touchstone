@@ -106,26 +106,38 @@ the deal returns to the open feed on its own. A verification that found the
 listing available outranks an older disappearance the same way. Manual dismissal
 outranks everything; restore revokes it.
 
-**Verification — an observation, taken on request.** The operator can ask for
-ground truth about one flagged listing: the scanner makes a single Browse
-`getItem` call, spending one call from the daily allowance. The web tier holds
-no eBay credentials and can never spend budget, so the request is recorded in
-the database and honored on the scanner's next pass — the same shape as
-`scan_requested_at`.
+**Verification — an observation, taken on request or when nothing else will.**
+A single Browse `getItem` call about one flagged listing, spending one call from
+the daily allowance. The web tier holds no eBay credentials and can never spend
+budget, so an operator's request is recorded in the database and honored on the
+scanner's next pass — the same shape as `scan_requested_at`.
+
+The disappearance series cannot retire every stale flag: a capped query records
+no disappearances at all (see above), so a flag raised by one would otherwise
+sit in the open feed for good after its listing ended. After answering the
+operator's requests, the scanner therefore checks, unasked, each open flag whose
+listing its own query's latest scan did not return — at most once per 24 hours
+per flag, and a bounded number per pass. A listing that search is still
+returning is live and is never checked; a flag already retired on recorded
+evidence is not checked either.
 
 The result is an outcome and a timestamp, and nothing else:
 
-- `available` — the API returned the listing as active.
-- `unavailable` — the listing is not retrievable, which is what the API reports
-  for ended listings. Ended, sold, and purged are not distinguishable from
-  outside, and the outcome does not claim to tell them apart.
-- `unknown` — an error or an ambiguous response. A transient failure is not
-  evidence, so `unknown` changes nothing.
+- `available` — the listing has no end date in the past and eBay estimates it
+  in stock.
+- `unavailable` — the listing's `itemEndDate` has passed, its stock estimate is
+  `OUT_OF_STOCK`, or the API no longer returns it at all (404/410). Observed
+  against the live API: an ended listing keeps answering 200 for weeks, and one
+  that ended unsold can still say `IN_STOCK`, so the end date is read first.
+  Ended, sold, and purged are not distinguishable from outside, and the outcome
+  does not claim to tell them apart.
+- `unknown` — an error or a response carrying neither signal. A transient
+  failure is not evidence, so `unknown` changes nothing.
 
 An `unavailable` verification removes the deal from the open feed; an
 `available` one keeps it there. The `getItem` response carries seller data; the
-parser reads the listing status and discards the rest at the boundary, exactly
-as search does.
+parser reads the end date and stock estimate and discards the rest at the
+boundary, exactly as search does.
 
 ## Categories, units, and cohorts
 
