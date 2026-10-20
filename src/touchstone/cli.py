@@ -16,7 +16,7 @@ from typing import assert_never
 
 from sqlalchemy import select
 
-from touchstone.db.models import Deal, Query, Scan, ScanStatus
+from touchstone.db.models import Deal, Query, Scan, ScanStatus, unit_suffix
 from touchstone.db.session import make_engine, make_session_factory
 from touchstone.ebay import exclusions
 from touchstone.ebay.budget import BudgetGuard, recent_budgets
@@ -285,10 +285,11 @@ def cmd_deals(args: argparse.Namespace) -> int:
             print("no deals flagged")
             return 0
         for deal in rows:
-            per_gb = f"{float(deal.per_gb):.2f}" if deal.per_gb is not None else "?"
+            per_unit = f"{float(deal.per_unit):.2f}" if deal.per_unit is not None else "?"
+            suffix = unit_suffix(deal.unit)
             print(
                 f"score={float(deal.score):>6.2f}  ${float(deal.total_cost):>8.2f}  "
-                f"${per_gb}/GB  (cohort p10 ${float(deal.cohort_p10):.2f}/GB, "
+                f"${per_unit}{suffix}  (cohort p10 ${float(deal.cohort_p10):.2f}{suffix}, "
                 f"n={deal.cohort_n})  {deal.listing_id}"
             )
             print(f"        {deal.cohort_key}")

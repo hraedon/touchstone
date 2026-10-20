@@ -20,7 +20,15 @@ from sqlalchemy.orm import Session
 from touchstone.db.models import ExtractionMethod, ItemSpec, Listing
 from touchstone.extract.llm import UmansExtractor
 from touchstone.extract.normalize import normalize_title
-from touchstone.extract.specs import LLM_THRESHOLD, SpecCandidate, extract_regex, plausible
+from touchstone.extract.specs import (
+    LLM_THRESHOLD,
+    SpecCandidate,
+    extract_regex,
+    extract_storage_regex,
+    looks_like_memory,
+    looks_like_storage,
+    plausible,
+)
 
 log = logging.getLogger("touchstone.extract")
 
@@ -65,6 +73,7 @@ def _store(
         ItemSpec(
             title_hash=title_hash,
             normalized_title=normalize_title(title)[:500],
+            category=candidate.category,
             capacity_per_module_gb=candidate.capacity_per_module_gb,
             module_count=candidate.module_count,
             total_gb=candidate.total_gb,
@@ -74,12 +83,33 @@ def _store(
             rank_org=candidate.rank_org,
             ecc=candidate.ecc,
             registered=candidate.registered,
+            capacity_tb=candidate.capacity_tb,
+            storage_type=candidate.storage_type,
+            storage_iface=candidate.storage_iface,
+            storage_form=candidate.storage_form,
+            product_model=candidate.product_model,
             method=method,
             confidence=candidate.confidence,
             model_id=model_id,
             extracted_at=datetime.now(UTC),
         )
     )
+
+
+def regex_candidate(title: str) -> SpecCandidate:
+    """The fast-path reading of a title, memory or storage as the title demands.
+
+    Dispatch is by signal words, memory first: the memory corpus predates
+    categories and its regex is the most battle-tested thing here, so a title
+    that reads as memory is read as memory. A title with storage signals gets
+    the storage parser; one with neither (a bare part number, say) falls
+    through to the model, which is what the per-item category is for.
+    """
+    if looks_like_memory(title):
+        return extract_regex(title)
+    if looks_like_storage(title):
+        return extract_storage_regex(title)
+    return extract_regex(title)
 
 
 def run_extraction(
@@ -100,7 +130,7 @@ def run_extraction(
     unresolved = 0
 
     for title_hash, title in pending:
-        candidate = extract_regex(title)
+        candidate = regex_candidate(title)
 
         if candidate.confidence >= LLM_THRESHOLD and plausible(candidate):
             _store(session, title_hash, title, candidate, ExtractionMethod.REGEX, None)
@@ -185,6 +215,12 @@ def correct_spec(
     spec.rank_org = candidate.rank_org
     spec.ecc = candidate.ecc
     spec.registered = candidate.registered
+    spec.category = candidate.category
+    spec.capacity_tb = candidate.capacity_tb
+    spec.storage_type = candidate.storage_type
+    spec.storage_iface = candidate.storage_iface
+    spec.storage_form = candidate.storage_form
+    spec.product_model = candidate.product_model
     spec.method = ExtractionMethod.MANUAL
     spec.confidence = 1.0
     spec.corrected_by = corrected_by

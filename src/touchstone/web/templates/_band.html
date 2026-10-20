@@ -4,18 +4,18 @@
 {% macro price_band(band) %}
 <div class="ts-band{% if band.suppressed %} ts-band--suppressed{% endif %}">
   <div class="ts-band-track" role="img"
-       aria-label="Flagged at {{ band.marked | per_gb }} {{ band.unit }}; cohort p10 {{ band.p10 | per_gb }}, median {{ band.median | per_gb }}, n={{ band.n }}">
+       aria-label="Flagged at {{ band.marked | per_unit }} {{ band.unit }}; cohort p10 {{ band.p10 | per_unit }}, median {{ band.median | per_unit }}, n={{ band.n }}">
     <div class="ts-band-span" style="left: {{ band.band_left }}%; width: {{ band.band_width }}%"></div>
     <div class="ts-band-tick" style="left: {{ band.p10_pos }}%" title="p10 asking"></div>
     {% if not band.degenerate %}<div class="ts-band-tick" style="left: {{ band.median_pos }}%" title="median asking"></div>{% endif %}
     <div class="ts-band-marker" style="left: {{ band.marked_pos }}%"></div>
   </div>
   <div class="ts-band-scale">
-    <span>this listing {{ band.marked | per_gb }}</span>
+    <span>this listing {{ band.marked | per_unit }}</span>
     {% if band.degenerate %}
-      <span>p10 and median both {{ band.p10 | per_gb }} asking (n={{ band.n }}) — no spread</span>
+      <span>p10 and median both {{ band.p10 | per_unit }} asking (n={{ band.n }}) — no spread</span>
     {% else %}
-      <span>p10 {{ band.p10 | per_gb }} — median {{ band.median | per_gb }} asking (n={{ band.n }})</span>
+      <span>p10 {{ band.p10 | per_unit }} — median {{ band.median | per_unit }} asking (n={{ band.n }})</span>
     {% endif %}
   </div>
   {% if band.degenerate %}

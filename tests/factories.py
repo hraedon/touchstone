@@ -81,8 +81,8 @@ def make_aggregate(
     cohort_key: str = "gen=DDR4|ff=RDIMM|ecc=y|reg=y|cap=32|mt=2400|rank=2Rx4|cond=3000",
     n: int = 12,
     price_median: float = 60.0,
-    per_gb_median: float | None = 1.9,
-    per_gb_p10: float | None = 1.4,
+    per_unit_median: float | None = 1.9,
+    per_unit_p10: float | None = 1.4,
 ) -> ScanAggregate:
     aggregate = ScanAggregate(
         scan_id=scan.id,
@@ -96,11 +96,11 @@ def make_aggregate(
         price_p25=price_median * 0.9,
         price_median=price_median,
         price_mean=price_median * 1.02,
-        per_gb_min=None if per_gb_p10 is None else per_gb_p10 * 0.9,
-        per_gb_p10=per_gb_p10,
-        per_gb_p25=None if per_gb_p10 is None else per_gb_p10 * 1.1,
-        per_gb_median=per_gb_median,
-        per_gb_mean=per_gb_median,
+        per_unit_min=None if per_unit_p10 is None else per_unit_p10 * 0.9,
+        per_unit_p10=per_unit_p10,
+        per_unit_p25=None if per_unit_p10 is None else per_unit_p10 * 1.1,
+        per_unit_median=per_unit_median,
+        per_unit_mean=per_unit_median,
     )
     session.add(aggregate)
     session.flush()

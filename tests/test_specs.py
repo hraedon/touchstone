@@ -9,11 +9,15 @@ from __future__ import annotations
 
 import pytest
 
+from touchstone.db.models import SpecCategory
 from touchstone.extract.specs import (
     DEAL_CONFIDENCE_FLOOR,
     LLM_THRESHOLD,
     SpecCandidate,
     extract_regex,
+    extract_storage_regex,
+    looks_like_memory,
+    looks_like_storage,
     plausible,
 )
 
@@ -190,3 +194,93 @@ class TestPlausible:
         ]
         for title in corpus:
             assert plausible(extract_regex(title)), title
+
+
+class TestStorageRegex:
+    """The storage fast path: capacity in TB (decimal and exact), class fields."""
+
+    def test_an_enterprise_ssd_reads_completely(self) -> None:
+        candidate = extract_storage_regex("Micron 7450 PRO 3.84TB U.2 NVMe SSD")
+        assert candidate.category is SpecCategory.STORAGE
+        assert candidate.capacity_tb == 3.84
+        assert candidate.storage_type == "SSD"
+        assert candidate.storage_iface == "NVMe"
+        assert candidate.storage_form == "U.2"
+        assert candidate.module_count == 1
+
+    def test_capacity_stated_in_gb_is_converted(self) -> None:
+        """A 480GB drive is 0.48TB; the memory validity set is what keeps a
+        "480GB SSD" out of the memory parser."""
+        candidate = extract_storage_regex("480GB SATA SSD 2.5 inch")
+        assert candidate.capacity_tb == 0.48
+        assert candidate.storage_iface == "SATA"
+        assert candidate.storage_form == "2.5"
+
+    def test_a_lot_of_drives_carries_the_multiplier(self) -> None:
+        candidate = extract_storage_regex("Lot of 8 x 3.84TB U.2 NVMe SSD")
+        assert candidate.capacity_tb == 3.84
+        assert candidate.module_count == 8
+
+    def test_an_hdd_is_typed_and_measured(self) -> None:
+        candidate = extract_storage_regex("16TB 7200RPM 3.5 SAS HDD")
+        assert candidate.capacity_tb == 16
+        assert candidate.storage_type == "HDD"
+        assert candidate.storage_iface == "SAS"
+        assert candidate.storage_form == "3.5"
+
+    def test_a_fully_read_title_is_regex_confident(self) -> None:
+        """Below LLM_THRESHOLD the title would go to the model; a complete
+        enterprise SSD title should not need to."""
+        assert extract_storage_regex("3.84TB U.2 NVMe SSD").confidence >= LLM_THRESHOLD
+
+    def test_a_bare_capacity_is_not(self) -> None:
+        assert extract_storage_regex("3.84TB drive pull").confidence < LLM_THRESHOLD
+
+    def test_memory_scale_gb_stated_drives_are_refused(self) -> None:
+        """32GB is a memory-scale number; a storage spec must not be invented
+        from it. The model gets the title instead."""
+        assert extract_storage_regex("32GB flash drive").capacity_tb is None
+
+
+class TestCategoryDispatch:
+    def test_memory_signal_words_route_to_the_memory_parser(self) -> None:
+        assert looks_like_memory("32GB 2Rx4 PC4-2400T DDR4 ECC REG Server Memory")
+        assert not looks_like_storage("32GB 2Rx4 PC4-2400T DDR4 ECC REG Server Memory")
+
+    def test_storage_signal_words_route_to_the_storage_parser(self) -> None:
+        assert looks_like_storage("3.84TB U.2 NVMe SSD")
+        assert not looks_like_memory("3.84TB U.2 NVMe SSD")
+
+    def test_a_bare_part_number_matches_neither(self) -> None:
+        """Exactly the E810 case: it belongs to the model, not a regex."""
+        assert not looks_like_memory("Intel E810-XXVDA2 25GbE Dual Port Adapter")
+        assert not looks_like_storage("Intel E810-XXVDA2 25GbE Dual Port Adapter")
+
+
+class TestPlausibleByCategory:
+    def test_storage_ranges(self) -> None:
+        assert plausible(SpecCandidate(category=SpecCategory.STORAGE, capacity_tb=3.84))
+        assert plausible(SpecCandidate(category=SpecCategory.STORAGE, capacity_tb=0.48))
+        assert not plausible(SpecCandidate(category=SpecCategory.STORAGE, capacity_tb=100.0))
+        assert not plausible(
+            SpecCandidate(category=SpecCategory.STORAGE, capacity_tb=3.84, module_count=0)
+        )
+
+    def test_model_plausibility(self) -> None:
+        assert plausible(
+            SpecCandidate(category=SpecCategory.OTHER, product_model="E810-XXVDA2")
+        )
+        assert not plausible(SpecCandidate(category=SpecCategory.OTHER))
+        assert not plausible(
+            SpecCandidate(category=SpecCategory.OTHER, product_model="x" * 121)
+        )
+
+    def test_a_memory_candidate_still_passes_memory_ranges(self) -> None:
+        assert plausible(
+            SpecCandidate(
+                category=SpecCategory.MEMORY,
+                capacity_per_module_gb=32,
+                module_count=1,
+                total_gb=32,
+            )
+        )

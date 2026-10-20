@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import enum
 from datetime import UTC, datetime
+from typing import assert_never
 
 from sqlalchemy import (
     Boolean,
@@ -80,6 +81,56 @@ class VerifyOutcome(enum.StrEnum):
     AVAILABLE = "available"
     UNAVAILABLE = "unavailable"
     UNKNOWN = "unknown"
+
+
+class SpecCategory(enum.StrEnum):
+    """What kind of good a spec describes; decides the cohort tuple and unit.
+
+    ``other`` is not a failure state — it is the model-keyed category for goods
+    whose identity is a part number (an E810-XXVDA2 is one unit of one good),
+    compared per item. A title nothing usable could be extracted from has no
+    spec row at all and stays in the unspecced cohort.
+    """
+
+    MEMORY = "memory"
+    STORAGE = "storage"
+    OTHER = "other"
+
+
+class PriceUnit(enum.StrEnum):
+    """The denominator a normalized price was divided by, recorded alongside it."""
+
+    GB = "gb"
+    TB = "tb"
+    ITEM = "item"
+
+
+def unit_suffix(unit: PriceUnit | None) -> str:
+    """What a normalized price was divided by, for display beside a number.
+
+    ``None`` renders as the generic form: it only occurs for rows the backfill
+    could not classify, and inventing a unit for them would be a claim the row
+    does not make. Lives here, beside the enum it dispatches on, so the CLI and
+    the web face share one vocabulary.
+    """
+    if unit is None:
+        return "/unit"
+    match unit:
+        case PriceUnit.GB:
+            return "/GB"
+        case PriceUnit.TB:
+            return "/TB"
+        case PriceUnit.ITEM:
+            return "/item"
+        case _:
+            assert_never(unit)
+
+
+def unit_price_label(unit: PriceUnit | None) -> str:
+    """The axis and series form: ``$/GB``, ``$/TB``, ``$/item``."""
+    if unit is None:
+        return "per unit"
+    return f"${unit_suffix(unit)}"
 
 
 # ---------------------------------------------------------------------------
@@ -294,12 +345,17 @@ class ScanAggregate(Base):
     price_median: Mapped[float] = mapped_column(Numeric(12, 2))
     price_mean: Mapped[float] = mapped_column(Numeric(12, 2))
 
-    # Null until Plan 002 supplies specs; a cohort with no capacity has no $/GB.
-    per_gb_min: Mapped[float | None] = mapped_column(Numeric(12, 4))
-    per_gb_p10: Mapped[float | None] = mapped_column(Numeric(12, 4))
-    per_gb_p25: Mapped[float | None] = mapped_column(Numeric(12, 4))
-    per_gb_median: Mapped[float | None] = mapped_column(Numeric(12, 4))
-    per_gb_mean: Mapped[float | None] = mapped_column(Numeric(12, 4))
+    # Null when the cohort has no usable spec (unspecced, or unknown shipping
+    # on a member): no denominator, no normalized price. The unit records what
+    # the numbers were divided by at write time and is never recomputed.
+    unit: Mapped[PriceUnit | None] = mapped_column(
+        Enum(PriceUnit, native_enum=False, length=8)
+    )
+    per_unit_min: Mapped[float | None] = mapped_column(Numeric(12, 4))
+    per_unit_p10: Mapped[float | None] = mapped_column(Numeric(12, 4))
+    per_unit_p25: Mapped[float | None] = mapped_column(Numeric(12, 4))
+    per_unit_median: Mapped[float | None] = mapped_column(Numeric(12, 4))
+    per_unit_mean: Mapped[float | None] = mapped_column(Numeric(12, 4))
 
     __table_args__ = (
         UniqueConstraint("scan_id", "cohort_key", name="uq_aggregate_scan_cohort"),
@@ -318,6 +374,10 @@ class ItemSpec(Base):
     Keyed by normalized-title hash, not by listing: extraction cost is bounded to
     distinct titles. ``method`` and ``confidence`` are always recorded, and a MANUAL
     correction supersedes a model result permanently.
+
+    The field set is a union over categories: memory fields, storage fields, or
+    ``product_model`` for the per-item category. Only the spec's category decides
+    which cohort tuple — and which normalization denominator — applies.
     """
 
     __tablename__ = "item_spec"
@@ -325,6 +385,11 @@ class ItemSpec(Base):
     title_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
     normalized_title: Mapped[str] = mapped_column(String(500))
 
+    category: Mapped[SpecCategory | None] = mapped_column(
+        Enum(SpecCategory, native_enum=False, length=16)
+    )
+
+    # memory
     capacity_per_module_gb: Mapped[int | None] = mapped_column(Integer)
     module_count: Mapped[int | None] = mapped_column(Integer)
     total_gb: Mapped[int | None] = mapped_column(Integer)
@@ -334,6 +399,16 @@ class ItemSpec(Base):
     rank_org: Mapped[str | None] = mapped_column(String(20))
     ecc: Mapped[bool | None] = mapped_column(Boolean)
     registered: Mapped[bool | None] = mapped_column(Boolean)
+
+    # storage. capacity is decimal TB — enterprise flash is sold in 3.84TB and
+    # 1.92TB steps and those decimals are exact, not rounding.
+    capacity_tb: Mapped[float | None] = mapped_column(Numeric(5, 2))
+    storage_type: Mapped[str | None] = mapped_column(String(10))  # SSD | HDD
+    storage_iface: Mapped[str | None] = mapped_column(String(10))  # NVMe | SATA | SAS
+    storage_form: Mapped[str | None] = mapped_column(String(10))  # 2.5 | 3.5 | U.2 | M.2
+
+    # other — the part number IS the good; module_count still applies to lots
+    product_model: Mapped[str | None] = mapped_column(String(120))
 
     method: Mapped[ExtractionMethod | None] = mapped_column(
         Enum(ExtractionMethod, native_enum=False, length=32)
@@ -357,7 +432,10 @@ class Deal(Base):
     cohort_key: Mapped[str] = mapped_column(String(300), index=True)
 
     total_cost: Mapped[float] = mapped_column(Numeric(12, 2))
-    per_gb: Mapped[float | None] = mapped_column(Numeric(12, 4))
+    per_unit: Mapped[float | None] = mapped_column(Numeric(12, 4))
+    unit: Mapped[PriceUnit | None] = mapped_column(
+        Enum(PriceUnit, native_enum=False, length=8)
+    )
     cohort_p10: Mapped[float] = mapped_column(Numeric(12, 4))
     cohort_n: Mapped[int] = mapped_column(Integer)
     score: Mapped[float] = mapped_column(Numeric(6, 3))

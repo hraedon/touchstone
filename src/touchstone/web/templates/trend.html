@@ -24,7 +24,7 @@
     </select>
     <label class="ts-fig-label" for="metric">Metric</label>
     <select id="metric" name="metric">
-      <option value="per_gb" {% if metric == 'per_gb' %}selected{% endif %}>asking $/GB</option>
+      <option value="per_unit" {% if metric == 'per_unit' %}selected{% endif %}>asking per unit ($/GB, $/TB, or $/item — per cohort)</option>
       <option value="price" {% if metric == 'price' %}selected{% endif %}>asking price</option>
     </select>
     {% if cohort %}<input type="hidden" name="cohort" value="{{ cohort }}">{% endif %}
@@ -64,7 +64,7 @@
       into, or from, any cohort keyed on the full spec.
     {% elif panel.series.unspecced %}
       <span class="ts-badge">unspecced</span>
-      Listings whose capacity could not be read. No $/GB exists for them, and they are
+      Listings whose spec could not be read. No normalized price exists for them, and they are
       deliberately kept out of every real cohort so they cannot corrupt the reference
       other listings are scored against.
     {% endif %}
@@ -73,15 +73,15 @@
       <span class="ts-suppressed">statistics withheld — fewer than {{ MIN_COHORT_N }} listings</span>
     {% else %}
       median asking {{ panel.series.latest.price_median | money }} {{ panel.series.latest.currency }},
-      {% if panel.series.latest.per_gb_median is not none %}
-        {{ panel.series.latest.per_gb_median | per_gb }} /GB asking
+      {% if panel.series.latest.per_unit_median is not none %}
+        {{ panel.series.latest.per_unit_median | per_unit }} {{ unit_suffix(panel.series.latest.unit) }} asking
       {% else %}
-        <span class="ts-unknown">no $/GB (capacity unknown for this cohort)</span>
+        <span class="ts-unknown">no normalized price (spec unknown for this cohort)</span>
       {% endif %}
     {% endif %}
   </p>
 
-  {{ line_chart(panel.plot, "Asking " ~ ("$/GB" if metric == 'per_gb' else "price") ~ " over time for cohort " ~ panel.series.cohort_key) }}
+  {{ line_chart(panel.plot, "Asking " ~ (unit_price_label(panel.series.latest.unit) if metric == 'per_unit' else "price") ~ " over time for cohort " ~ panel.series.cohort_key) }}
 
   <div class="ts-legend">
     <span><i class="swatch swatch--median"></i>median asking</span>
@@ -96,7 +96,7 @@
     <thead><tr>
       <th>Observed</th><th class="num">n</th><th class="num">min asking</th>
       <th class="num">p10 asking</th><th class="num">median asking</th>
-      <th class="num">median asking $/GB</th><th class="num">floor</th><th></th>
+      <th class="num">median asking</th><th class="num">floor</th><th></th>
     </tr></thead>
     <tbody>
     {% for point in panel.series.points | reverse %}
@@ -109,7 +109,7 @@
           <td class="num"><span class="ts-fig">{{ point.price_min | money }}</span></td>
           <td class="num"><span class="ts-fig">{{ point.price_p10 | money }}</span></td>
           <td class="num"><span class="ts-fig">{{ point.price_median | money }}</span></td>
-          <td class="num"><span class="ts-fig">{{ point.per_gb_median | per_gb }}</span></td>
+          <td class="num"><span class="ts-fig">{{ point.per_unit_median | per_unit }} {{ unit_suffix(point.unit) }}</span></td>
         {% endif %}
         <td class="num">{{ point.min_seller_feedback }}</td>
         <td>{% if point.capped %}<span class="ts-badge ts-badge--warn">capped</span>{% endif %}</td>

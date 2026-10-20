@@ -13,7 +13,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from touchstone.db.models import ExtractionMethod, ItemSpec, Listing
+from touchstone.db.models import ExtractionMethod, ItemSpec, Listing, SpecCategory
 from touchstone.extract.llm import (
     DEFAULT_MODEL,
     ModelRejected,
@@ -297,3 +297,55 @@ class TestCorrection:
                 SpecCandidate(capacity_per_module_gb=32, module_count=4, total_gb=999),
                 corrected_by="operator",
             )
+
+
+class TestParseModelOutputCategories:
+    """The v2 contract: a category plus its own field group."""
+
+    def test_a_storage_reading(self) -> None:
+        candidate = parse_model_output(
+            json.dumps(
+                {
+                    "category": "storage",
+                    "capacity_tb": 3.84,
+                    "storage_type": "SSD",
+                    "storage_iface": "NVMe",
+                    "storage_form": "U.2",
+                    "module_count": 1,
+                }
+            )
+        )
+        assert candidate is not None
+        assert candidate.category is SpecCategory.STORAGE
+        assert candidate.capacity_tb == 3.84
+        assert candidate.usable
+
+    def test_a_per_item_reading(self) -> None:
+        candidate = parse_model_output(
+            json.dumps(
+                {"category": "other", "product_model": "E810-XXVDA2", "module_count": 2}
+            )
+        )
+        assert candidate is not None
+        assert candidate.category is SpecCategory.OTHER
+        assert candidate.product_model == "E810-XXVDA2"
+        assert candidate.usable
+
+    def test_an_unidentifiable_title_is_not_a_spec(self) -> None:
+        assert parse_model_output(json.dumps({"category": "other", "product_model": None})) is None
+
+    def test_an_out_of_range_storage_reading_is_discarded(self) -> None:
+        assert (
+            parse_model_output(json.dumps({"category": "storage", "capacity_tb": 500})) is None
+        )
+
+    def test_a_legacy_memory_response_still_parses(self) -> None:
+        """A model that ignores the category instruction must not lose its
+        memory reading: the ranges default to memory."""
+        candidate = parse_model_output(
+            json.dumps(
+                {"capacity_per_module_gb": 32, "module_count": 1, "total_gb": 32}
+            )
+        )
+        assert candidate is not None
+        assert candidate.usable

@@ -49,17 +49,22 @@ def _metric_lines(series: views.CohortSeries, metric: str) -> list[charts.LineSp
         value = None if point.suppressed else getattr(point, attribute)
         return charts.Sample(at=point.observed_at, value=value)
 
-    if metric == "per_gb":
+    if metric == "per_unit":
+        # The cohort's own unit labels its lines: a $/GB memory series and a
+        # $/TB storage series never share a chart (they cannot share a query's
+        # cohort keys), but each label says what it divided by.
+        unit = next((p.unit for p in series.points if p.unit is not None), None)
+        label = charts.unit_price_label(unit)
         return [
             charts.LineSpec(
-                label="median asking $/GB",
+                label=f"median asking {label}",
                 role="median",
-                samples=tuple(sample(p, "per_gb_median") for p in series.points),
+                samples=tuple(sample(p, "per_unit_median") for p in series.points),
             ),
             charts.LineSpec(
-                label="p10 asking $/GB",
+                label=f"p10 asking {label}",
                 role="p10",
-                samples=tuple(sample(p, "per_gb_p10") for p in series.points),
+                samples=tuple(sample(p, "per_unit_p10") for p in series.points),
             ),
         ]
     return [
@@ -83,7 +88,7 @@ def query_trend(
     session: DbSession,
     days: int = DEFAULT_WINDOW_DAYS,
     cohort: str | None = None,
-    metric: str = "per_gb",
+    metric: str = "per_unit",
 ) -> Any:
     if days not in WINDOW_CHOICES:
         return render(
@@ -92,11 +97,11 @@ def query_trend(
             message=f"Window must be one of {', '.join(str(d) for d in WINDOW_CHOICES)} days.",
             status_code=HTTP_400_BAD_REQUEST,
         )
-    if metric not in {"per_gb", "price"}:
+    if metric not in {"per_unit", "price"}:
         return render(
             request,
             "error.html",
-            message="Metric must be per_gb or price.",
+            message="Metric must be per_unit or price.",
             status_code=HTTP_400_BAD_REQUEST,
         )
 

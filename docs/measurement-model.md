@@ -39,7 +39,8 @@ be accurate about what it measured, not to guess at the number it cannot see.
 ### 1. Asking-price index — a fact
 
 Per cohort, per scan: `n`, `p10`, `p25`, `median`, `mean`, `min`, over both absolute
-price and normalized `$/GB`.
+price and normalized per-unit price (`$/GB` for memory, `$/TB` for storage,
+per-item price for everything else).
 
 This is a true statement about what was being asked at a point in time. It is always
 labelled "asking" in the UI and in every export. It is never called market value,
@@ -73,7 +74,8 @@ This series costs nothing — it falls out of diffing snapshots we already store
 
 ### 3. Deal score — conservative by construction
 
-A listing is interesting when its `$/GB` sits below the `p10` of its cohort's current
+A listing is interesting when its normalized price — `$/GB`, `$/TB`, or `$/item`
+depending on its category — sits below the `p10` of its cohort's current
 active distribution.
 
 The reference is biased high, so "below the 10th percentile of asking" is a *weaker*
@@ -125,38 +127,70 @@ An `unavailable` verification removes the deal from the open feed; an
 parser reads the listing status and discards the rest at the boundary, exactly
 as search does.
 
-## Cohorts
+## Categories, units, and cohorts
 
 Comparing a 32GB 2Rx4 PC4-2400 RDIMM against an 8GB UDIMM produces a number with no
-meaning. A price is only comparable within a cohort of substitutable goods.
+meaning. A price is only comparable within a cohort of substitutable goods, and
+what makes goods substitutable depends on what kind of good they are. touchstone
+therefore carries a **category** on every extracted spec, and the category
+decides the unit the price is normalized in:
 
-`cohort_key` for memory is the tuple:
+| Category | Unit | Cohort tuple |
+| --- | --- | --- |
+| `memory` | `$/GB` | `(ddr_gen, form_factor, ecc, registered, capacity_per_module_gb, speed_mt, rank_org, condition)` |
+| `storage` | `$/TB` | `(storage_type, capacity_tb, storage_iface, storage_form, condition)` |
+| `other` | `$/item` | `(model, condition)` |
 
-```
-(ddr_gen, form_factor, ecc, registered, capacity_per_module_gb, speed_mt, rank_org, condition)
-```
+Condition is in every key, not a modifier: "new" and "pulled from a
+decommissioned server" are different goods at different prices, and averaging
+them describes neither.
 
-Condition is in the key, not a modifier: "new" and "pulled from a decommissioned
-server" are different goods at different prices, and averaging them describes
-neither.
+Normalization is always `total_cost / units`, where `total_cost` includes
+shipping and the units are the category's denominator:
 
-Normalization is `total_cost / total_gb`, where `total_cost` includes shipping and
-`total_gb = capacity_per_module_gb × module_count`.
+- memory: `total_gb = capacity_per_module_gb × module_count` (integer GB);
+- storage: `capacity_tb × module_count` (decimal TB — enterprise flash is sold
+  in 3.84TB and 1.92TB steps, and those decimals are exact, not rounding);
+- other: `1` — the per-item metric *is* the delivered asking price, which is
+  the honest comparison for a model cohort where every listing is one unit.
+
+The cohort keys keep the formats they already had — memory keys are unchanged
+(`gen=DDR4|ff=RDIMM|…|cond=3000`), so no existing series is discontinuous. New
+categories prefix their keys (`sto|type=SSD|cap=3.84|iface=NVMe|form=U.2|cond=…`,
+`itm|model=E810-XXVDA2|cond=…`) so no future field can collide across categories.
+Model strings are normalized (uppercase, whitespace and underscores collapsed to
+single hyphens) so `E810 XXVDA2` and `E810-XXVDA2` land in one cohort.
+
+Brand is out of both the storage and memory keys — a Micron 3.84TB U.2 NVMe SSD
+and an Intel one are the same good to a buyer shopping the pull market, and
+brand-keyed cohorts would mostly sit under `n = 5` forever. The `other` category
+is the exception because there the model *is* the good: an E810-XXVDA2 (2×25G)
+and an E810-CQDA2 (1×100G) share a brand and nothing else.
+
+A title with no usable spec — no capacity for memory or storage, no model for
+`other` — stays in the `unspecced` cohort and is not scored, whatever its
+category. A per-item comparison over unlike goods is not weaker statistics, it
+is noise; messy titles are corrected by hand, and a human correction supersedes
+the model permanently.
 
 `total_cost` exists only when eBay supplies a shipping cost. A missing shipping cost
 is unknown, not free: the observation keeps the item price and records both
 `shipping_cost` and `total_cost` as null. Listings with an unknown total are excluded
-from total-cost aggregates, `$/GB`, and deal scoring; an aggregate's `n` is the count
-of listings with known totals that actually contributed to it. Their presence still
-counts in the scan result, and a later disappearance retains the known item price
-with a null last total. This is deliberate missingness, not imputation.
+from total-cost aggregates, per-unit prices, and deal scoring; an aggregate's `n` is
+the count of listings with known totals that actually contributed to it. Their
+presence still counts in the scan result, and a later disappearance retains the
+known item price with a null last total. This is deliberate missingness, not
+imputation.
 
 **The lot multiplier is the highest-consequence field in the system.** A listing
 titled "Lot of 4 × 32GB PC4-2400" at $200 is $1.56/GB. Read as a single 32GB module
 it is $6.25/GB — a 4× error that manufactures a nonexistent bargain *and* poisons the
 cohort statistics that other listings are scored against. One mis-parsed lot can
-create several false deals. This is why extraction confidence gates deal scoring, and
-why lot parsing gets dedicated tests.
+create several false deals. The same arithmetic applies to "Lot of 8 × 3.84TB U.2"
+drives, and the `other` category has its own version of the bug: a wrong model read
+groups unlike goods into one cohort and scores them against each other. This is why
+extraction confidence gates deal scoring in every category, and why lot and model
+parsing get dedicated tests.
 
 ## Deletion, and why aggregates are materialized
 

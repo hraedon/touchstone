@@ -22,6 +22,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
+# Display vocabulary for the unit a normalized price was divided by. Defined
+# beside the PriceUnit enum in the core so the CLI and the web face cannot
+# drift apart; re-exported here because the templates reach them through charts.
+from touchstone.db.models import PriceUnit
+from touchstone.db.models import unit_price_label as unit_price_label
+from touchstone.db.models import unit_suffix as unit_suffix
+
 WIDTH = 720
 HEIGHT = 240
 PAD_LEFT = 56
@@ -424,7 +431,7 @@ def price_band(
     minimum: float | None,
     n: int,
     currency: str = "USD",
-    unit: str = "/GB",
+    unit: str = unit_suffix(PriceUnit.GB),
 ) -> PriceBand:
     """Build the gauge, with a margin either side so the marker never sits on the rim."""
     low = minimum if minimum is not None else min(marked, p10)

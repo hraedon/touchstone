@@ -194,7 +194,7 @@ class TestDealFeedAvailability:
             scan_id=scan.id,
             cohort_key="gen=DDR4|cap=32|cond=3000",
             total_cost=38.0,
-            per_gb=1.1875,
+            per_unit=1.1875,
             cohort_p10=1.8,
             cohort_n=14,
             score=1.02,

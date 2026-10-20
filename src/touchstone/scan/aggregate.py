@@ -68,19 +68,24 @@ class CohortStats:
     cohort_key: str
     currency: str
     price: Stats
-    # None until Plan 002 supplies specs — a cohort with no known capacity has no
-    # meaningful $/GB, and inventing one would be worse than leaving it null.
-    per_gb: Stats | None
+    # None when the cohort has no usable spec — a cohort with no denominator has
+    # no meaningful normalized price, and inventing one would be worse than
+    # leaving it null.
+    per_unit: Stats | None
 
 
 @dataclass(frozen=True)
 class Priced:
-    """The minimum an aggregate needs about one observed listing."""
+    """The minimum an aggregate needs about one observed listing.
+
+    ``units`` is the category's denominator — GB for memory, TB for storage, 1
+    for per-item goods — carried as a float so decimal TB divides exactly.
+    """
 
     cohort_key: str
     total_cost: float | None
     currency: str
-    total_gb: int | None = None
+    units: float | None = None
 
 
 def cohort_stats(items: list[Priced]) -> list[CohortStats]:
@@ -98,28 +103,34 @@ def cohort_stats(items: list[Priced]) -> list[CohortStats]:
     for (key, currency), group in sorted(buckets.items()):
         # Item price remains observable when shipping is absent, but the delivered
         # total is not. Unknown totals do not belong in a total-cost distribution.
-        known: list[tuple[float, int | None]] = []
+        known: list[tuple[float, float | None]] = []
         for item in group:
             if item.total_cost is not None:
-                known.append((item.total_cost, item.total_gb))
+                known.append((item.total_cost, item.units))
         if not known:
             continue
 
-        prices = [cost for cost, _total_gb in known]
+        prices = [cost for cost, _units in known]
 
-        per_gb_values = [
-            cost / total_gb
-            for cost, total_gb in known
-            if total_gb is not None and total_gb > 0
+        per_unit_values = [
+            cost / units for cost, units in known if units is not None and units > 0
         ]
-        # Only report $/GB when every known-total member is specced. A partial figure
-        # would silently describe a different population than the price figure beside
-        # it; unknown-total members are already outside both distributions.
-        per_gb = (
-            Stats.of(per_gb_values) if per_gb_values and len(per_gb_values) == len(known) else None
+        # Only report a normalized price when every known-total member has a
+        # denominator. A partial figure would silently describe a different
+        # population than the price figure beside it; unknown-total members are
+        # already outside both distributions.
+        per_unit = (
+            Stats.of(per_unit_values)
+            if per_unit_values and len(per_unit_values) == len(known)
+            else None
         )
 
         results.append(
-            CohortStats(cohort_key=key, currency=currency, price=Stats.of(prices), per_gb=per_gb)
+            CohortStats(
+                cohort_key=key,
+                currency=currency,
+                price=Stats.of(prices),
+                per_unit=per_unit,
+            )
         )
     return results

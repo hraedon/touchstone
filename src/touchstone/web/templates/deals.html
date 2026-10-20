@@ -98,12 +98,12 @@
       <div class="value">{{ view.deal.total_cost | float | money }}</div>
     </div>
     <div class="ts-stat">
-      <div class="ts-fig-label">Asking $/GB</div>
-      <div class="value">{{ view.per_gb | per_gb }}</div>
+      <div class="ts-fig-label">Asking {{ unit_price_label(view.unit) }}</div>
+      <div class="value">{{ view.per_unit | per_unit }}</div>
     </div>
     <div class="ts-stat">
-      <div class="ts-fig-label">Cohort p10 asking $/GB</div>
-      <div class="value">{{ view.cohort_p10 | per_gb }}</div>
+      <div class="ts-fig-label">Cohort p10 asking {{ unit_price_label(view.unit) }}</div>
+      <div class="value">{{ view.cohort_p10 | per_unit }}</div>
     </div>
     <div class="ts-stat">
       <div class="ts-fig-label">Cohort n</div>
@@ -125,11 +125,20 @@
   {% endif %}
 
   <div class="ts-panel-note" style="margin-top: var(--space-3)">
-    <strong>Capacity parse.</strong>
+    <strong>Spec parse ({{ view.spec.category_label if view.spec else 'no spec' }}).</strong>
     {% if view.spec %}
-      {{ view.spec.total_gb if view.spec.total_gb is not none else '?' }} GB total
-      {% if view.spec.capacity_per_module_gb and view.spec.module_count %}
-        ({{ view.spec.module_count }} x {{ view.spec.capacity_per_module_gb }} GB){% endif %},
+      {% if view.spec.category == 'memory' %}
+        {{ view.spec.total_gb if view.spec.total_gb is not none else '?' }} GB total
+        {% if view.spec.capacity_per_module_gb and view.spec.module_count %}
+          ({{ view.spec.module_count }} x {{ view.spec.capacity_per_module_gb }} GB){% endif %},
+      {% elif view.spec.category == 'storage' %}
+        {{ '%.2f' % view.spec.capacity_tb if view.spec.capacity_tb is not none else '?' }} TB
+        {{ view.spec.storage_type or '?' }} {{ view.spec.storage_iface or '?' }} {{ view.spec.storage_form or '' }}
+        {% if view.spec.module_count and view.spec.module_count > 1 %}({{ view.spec.module_count }} units){% endif %},
+      {% else %}
+        model <span class="mono">{{ view.spec.product_model or '?' }}</span>
+        {% if view.spec.module_count and view.spec.module_count > 1 %}({{ view.spec.module_count }} units){% endif %},
+      {% endif %}
       read by <span class="mono">{{ view.spec.method_label }}</span>
       {% if view.spec.confidence is not none %}at confidence {{ view.spec.confidence | money(2) }}{% endif %}
       {% if view.spec.corrected_by %}(corrected by {{ view.spec.corrected_by }}){% endif %}.
@@ -137,9 +146,17 @@
         <span class="ts-badge ts-badge--warn">low confidence</span>
       {% endif %}
       <a href="{{ url_for('spec_edit', title_hash=view.spec.title_hash) }}">Correct this</a>.
-      Every figure above divides by that capacity: reading a lot of four modules as
-      one manufactures a fourfold bargain that is not there, and drags the cohort
-      reference with it.
+      {% if view.spec.category == 'memory' %}
+        Every figure above divides by that capacity: reading a lot of four modules as
+        one manufactures a fourfold bargain that is not there, and drags the cohort
+        reference with it.
+      {% elif view.spec.category == 'storage' %}
+        Every figure above divides by that capacity: reading a lot of eight drives as
+        one manufactures an eightfold bargain, and mis-read TB poisons the cohort.
+      {% else %}
+        The model is the good: a wrong model read groups unlike goods into one
+        cohort and scores them against each other.
+      {% endif %}
     {% else %}
       No spec recorded for this title.
     {% endif %}
