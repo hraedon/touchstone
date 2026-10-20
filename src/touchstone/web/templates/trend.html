@@ -52,6 +52,16 @@
     marked on the charts.
   </p>
   {% endif %}
+
+  {% if trend.truncated_scan_count %}
+  <p class="ts-panel-note" style="margin-top: var(--space-3)">
+    <span class="ts-badge ts-badge--warn">partial</span>
+    {{ trend.truncated_scan_count }} scan(s) in this query's history stopped at its page
+    budget before reaching eBay's total, so they read a best-match window rather than
+    the whole result set. Their disappearances were not recorded, and points from them
+    are marked on the charts. Raising the query's page budget makes later scans whole.
+  </p>
+  {% endif %}
 </div>
 
 {% for panel in panels %}
@@ -87,7 +97,7 @@
     <span><i class="swatch swatch--median"></i>median asking</span>
     <span><i class="swatch swatch--p10"></i>p10 asking</span>
     <span><i class="swatch swatch--rule"></i>discontinuity — do not read across</span>
-    <span><i class="swatch swatch--flagged"></i>capped scan</span>
+    <span><i class="swatch swatch--flagged"></i>capped or partial scan</span>
     <span>gaps = suppressed (n &lt; {{ MIN_COHORT_N }}), never interpolated</span>
   </div>
 
@@ -112,7 +122,7 @@
           <td class="num"><span class="ts-fig">{{ point.per_unit_median | per_unit }} {{ unit_suffix(point.unit) }}</span></td>
         {% endif %}
         <td class="num">{{ point.min_seller_feedback }}</td>
-        <td>{% if point.capped %}<span class="ts-badge ts-badge--warn">capped</span>{% endif %}</td>
+        <td>{% if point.capped %}<span class="ts-badge ts-badge--warn">capped</span>{% elif point.truncated %}<span class="ts-badge ts-badge--warn">partial</span>{% endif %}</td>
       </tr>
     {% endfor %}
     </tbody>
@@ -177,6 +187,7 @@
         <td class="num">{{ scan.api_calls }}</td>
         <td>
           {% if scan.capped %}<span class="ts-badge ts-badge--warn">capped</span>{% endif %}
+          {% if scan.truncated %}<span class="ts-badge ts-badge--warn">partial</span>{% endif %}
           {% if scan.error %}<span class="ts-badge ts-badge--crit">{{ scan.error }}</span>{% endif %}
         </td>
       </tr>

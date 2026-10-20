@@ -124,7 +124,7 @@ def query_trend(
             "plot": charts.line_plot(
                 _metric_lines(series, metric),
                 discontinuities=rules,
-                flagged=tuple(p.observed_at for p in series.points if p.capped),
+                flagged=tuple(p.observed_at for p in series.points if p.windowed),
             ),
         }
         for series in charted

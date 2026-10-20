@@ -10,6 +10,8 @@ afterwards — that is what keeps a chart honest across a deletion.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -46,7 +48,7 @@ from touchstone.extract.cohort import (
 from touchstone.extract.normalize import title_hash
 from touchstone.scan.aggregate import Priced, Stats, cohort_stats
 from touchstone.scan.deals import evaluate
-from touchstone.scan.diff import PreviousListing, find_disappearances
+from touchstone.scan.diff import PreviousListing, ScanWindow, find_disappearances
 
 log = logging.getLogger("touchstone.scan")
 
@@ -65,6 +67,7 @@ class ScanResult:
     cohorts: int
     api_calls: int
     capped: bool
+    truncated: bool
     deals: int = 0
     excluded_low_feedback: int = 0
 
@@ -177,6 +180,21 @@ def _unit_of(spec: ItemSpec | None) -> PriceUnit | None:
             return PriceUnit.ITEM
         case _:
             assert_never(spec.category)
+
+
+def query_signature(query: Query) -> str:
+    """A digest of what the query asks eBay for, to detect an edit between scans.
+
+    Covers exactly the stored definition. The operator's seller exclusions are
+    combined into the filter only at call time and are deliberately not hashed
+    here: they have their own keyed digest, and an unkeyed hash over a filter
+    carrying usernames could be reversed by guessing.
+    """
+    definition = json.dumps(
+        [query.q, query.category_ids or "", query.filter_expr or "", query.marketplace_id],
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(definition.encode("utf-8")).hexdigest()
 
 
 def _previous_scan(session: Session, query_id: int, before_scan_id: int) -> Scan | None:
@@ -374,6 +392,9 @@ def run_scan(
     calls = 0
     total_reported = 0
     capped = False
+    # Set when paging reaches eBay's own total. Running out of pages first —
+    # the query's max_pages, or a short allowance — leaves a best-match window.
+    reached_end = False
     excluded = 0
 
     try:
@@ -405,12 +426,27 @@ def run_scan(
             # filtered out, which is not the end of the result set. Page on until
             # eBay's own total says we are done.
             if offset + page_limit >= page.total:
+                reached_end = True
                 break
 
         # The result set exceeds what eBay will page through, so what we see is a
         # moving window rather than a stable population.
         if total_reported > MAX_RESULT_SET:
             capped = True
+        # Distinct from capped on purpose: the remedy differs. Capped means narrow
+        # the query; truncated means raise its page budget (or it ran short of
+        # allowance). Both mean the scan cannot vouch for absence.
+        truncated = not capped and not reached_end
+        if truncated:
+            log.warning(
+                "query %s stopped at %d of %d pages before eBay's total of %d; "
+                "this scan saw a window, not the result set",
+                query.name,
+                allowed_pages,
+                -(-total_reported // page_limit),
+                total_reported,
+            )
+        signature = query_signature(query)
 
         new_count = 0
         for parsed in seen.values():
@@ -436,8 +472,14 @@ def run_scan(
             gone = find_disappearances(
                 _previous_snapshot(session, prior.id),
                 set(seen),
-                previous_capped=prior.capped,
-                current_capped=capped,
+                previous_window=ScanWindow(
+                    capped=prior.capped,
+                    truncated=prior.truncated,
+                    query_signature=prior.query_signature,
+                ),
+                current_window=ScanWindow(
+                    capped=capped, truncated=truncated, query_signature=signature
+                ),
             )
             for item in gone:
                 session.add(
@@ -524,6 +566,8 @@ def run_scan(
         scan.api_calls = calls
         scan.result_count = len(seen)
         scan.capped = capped
+        scan.truncated = truncated
+        scan.query_signature = signature
         scan.min_seller_feedback = query.min_seller_feedback
         scan.excluded_sellers_count = len(excluded_sellers)
         scan.excluded_sellers_digest = exclusions.digest(excluded_sellers) or None
@@ -542,6 +586,7 @@ def run_scan(
             cohorts=len(cohorts),
             api_calls=calls,
             capped=capped,
+            truncated=truncated,
             deals=flagged,
             excluded_low_feedback=excluded,
         )

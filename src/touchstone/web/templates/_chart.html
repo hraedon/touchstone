@@ -27,7 +27,7 @@
     {% for dot in line.dots %}
       <circle class="dot{% if dot.flagged %} dot--flagged{% endif %}"
               cx="{{ dot.x }}" cy="{{ dot.y }}" r="2.2">
-        <title>{{ line.label }} {{ dot.value | money(3) }} on {{ dot.at | stamp }}{% if dot.flagged %} — capped scan{% endif %}</title>
+        <title>{{ line.label }} {{ dot.value | money(3) }} on {{ dot.at | stamp }}{% if dot.flagged %} — capped or partial scan{% endif %}</title>
       </circle>
     {% endfor %}
   {% endfor %}

@@ -80,6 +80,8 @@ class DiscontinuityKind(enum.StrEnum):
     FEEDBACK_FLOOR = "feedback_floor"
     COHORT_KEY_FORMAT = "cohort_key_format"
     SELLER_EXCLUSIONS = "seller_exclusions"
+    SAMPLING_WINDOW = "sampling_window"
+    QUERY_DEFINITION = "query_definition"
 
 
 def discontinuity_label(kind: DiscontinuityKind) -> str:
@@ -90,6 +92,10 @@ def discontinuity_label(kind: DiscontinuityKind) -> str:
             return "Cohort definition changed"
         case DiscontinuityKind.SELLER_EXCLUSIONS:
             return "Seller exclusion list changed"
+        case DiscontinuityKind.SAMPLING_WINDOW:
+            return "Sampling window changed"
+        case DiscontinuityKind.QUERY_DEFINITION:
+            return "Query definition changed"
         case _:
             assert_never(kind)
 
@@ -116,6 +122,19 @@ def discontinuity_detail(kind: DiscontinuityKind) -> str:
                 "set of listings was sampled from this point on. Who is on that list "
                 "is deliberately not recorded — only that it changed, and how many "
                 "names it held."
+            )
+        case DiscontinuityKind.SAMPLING_WINDOW:
+            return (
+                "Scans on one side of this line read the whole result set; on the "
+                "other they stopped at the query's page budget and read only eBay's "
+                "best-match window. A best-match window is not a random sample, so "
+                "the figures either side describe different populations."
+            )
+        case DiscontinuityKind.QUERY_DEFINITION:
+            return (
+                "The query's keywords, categories, filter, or marketplace were edited "
+                "here, so a different set of listings was measured from this point "
+                "on. Disappearances are not recorded across the edit."
             )
         case _:
             assert_never(kind)
@@ -161,6 +180,13 @@ class AskingPoint:
     per_unit_mean: float | None
     capped: bool
     min_seller_feedback: int
+    # None on scans recorded before truncation was tracked.
+    truncated: bool | None = None
+
+    @property
+    def windowed(self) -> bool:
+        """Drawn from a window rather than the whole result set."""
+        return self.capped or self.truncated is True
 
     @property
     def suppressed(self) -> bool:
@@ -218,6 +244,8 @@ class ScanRow:
     error: str | None
     excluded_sellers_count: int = 0
     excluded_sellers_digest: str | None = None
+    truncated: bool | None = None
+    query_signature: str | None = None
 
 
 @dataclass(frozen=True)
@@ -231,6 +259,10 @@ class QueryTrend:
     @property
     def capped_scan_count(self) -> int:
         return sum(1 for scan in self.scans if scan.capped)
+
+    @property
+    def truncated_scan_count(self) -> int:
+        return sum(1 for scan in self.scans if scan.truncated)
 
 
 def _scan_rows(session: Session, query_id: int, limit: int = 200) -> list[ScanRow]:
@@ -253,6 +285,8 @@ def _scan_rows(session: Session, query_id: int, limit: int = 200) -> list[ScanRo
             error=scan.error,
             excluded_sellers_count=scan.excluded_sellers_count,
             excluded_sellers_digest=scan.excluded_sellers_digest,
+            truncated=scan.truncated,
+            query_signature=scan.query_signature,
         )
         for scan in session.scalars(stmt)
     ]
@@ -312,6 +346,64 @@ def seller_exclusion_discontinuities(scans: list[ScanRow]) -> list[Discontinuity
     return markers
 
 
+def sampling_window_discontinuities(scans: list[ScanRow]) -> list[Discontinuity]:
+    """One marker wherever scans switch between a page-budget window and the whole set.
+
+    Scans recorded before truncation was tracked (``None``) neither start nor end
+    a run: unknown is not a change.
+    """
+    ordered = sorted(
+        (
+            scan
+            for scan in scans
+            if scan.status is ScanStatus.COMPLETE and scan.truncated is not None
+        ),
+        key=lambda scan: scan.started_at,
+    )
+    markers: list[Discontinuity] = []
+    previous: bool | None = None
+    for scan in ordered:
+        if previous is not None and scan.truncated != previous:
+            markers.append(
+                Discontinuity(
+                    at=scan.started_at,
+                    kind=DiscontinuityKind.SAMPLING_WINDOW,
+                    note=(
+                        "whole result set to page-budget window"
+                        if scan.truncated
+                        else "page-budget window to whole result set"
+                    ),
+                )
+            )
+        previous = scan.truncated
+    return markers
+
+
+def query_definition_discontinuities(scans: list[ScanRow]) -> list[Discontinuity]:
+    """One marker wherever the recorded query definition differs from the last scan's."""
+    ordered = sorted(
+        (
+            scan
+            for scan in scans
+            if scan.status is ScanStatus.COMPLETE and scan.query_signature is not None
+        ),
+        key=lambda scan: scan.started_at,
+    )
+    markers: list[Discontinuity] = []
+    previous: str | None = None
+    for scan in ordered:
+        if previous is not None and scan.query_signature != previous:
+            markers.append(
+                Discontinuity(
+                    at=scan.started_at,
+                    kind=DiscontinuityKind.QUERY_DEFINITION,
+                    note="query edited",
+                )
+            )
+        previous = scan.query_signature
+    return markers
+
+
 def cohort_format_discontinuity(series: list[CohortSeries]) -> list[Discontinuity]:
     """A single marker where Plan 001 keys give way to Plan 002 keys, if both exist.
 
@@ -352,7 +444,7 @@ def query_trend(
         return None
 
     stmt = (
-        select(ScanAggregate, Scan.capped, Scan.min_seller_feedback)
+        select(ScanAggregate, Scan.capped, Scan.min_seller_feedback, Scan.truncated)
         .join(Scan, Scan.id == ScanAggregate.scan_id)
         .where(ScanAggregate.query_id == query_id)
         .order_by(ScanAggregate.cohort_key, ScanAggregate.observed_at)
@@ -363,7 +455,7 @@ def query_trend(
         stmt = stmt.where(ScanAggregate.cohort_key == cohort_key)
 
     grouped: dict[tuple[str, str], list[AskingPoint]] = defaultdict(list)
-    for aggregate, capped, floor in session.execute(stmt):
+    for aggregate, capped, floor, truncated in session.execute(stmt):
         grouped[(aggregate.cohort_key, aggregate.currency)].append(
             AskingPoint(
                 scan_id=aggregate.scan_id,
@@ -383,6 +475,7 @@ def query_trend(
                 per_unit_mean=_maybe_float(aggregate.per_unit_mean),
                 capped=bool(capped),
                 min_seller_feedback=int(floor),
+                truncated=truncated,
             )
         )
 
@@ -397,6 +490,8 @@ def query_trend(
     discontinuities = (
         feedback_floor_discontinuities(scans)
         + seller_exclusion_discontinuities(scans)
+        + sampling_window_discontinuities(scans)
+        + query_definition_discontinuities(scans)
         + cohort_format_discontinuity(series)
     )
     discontinuities.sort(key=lambda marker: marker.at)
@@ -499,6 +594,8 @@ def query_rows(session: Session) -> list[QueryRow]:
                         error=last.error,
                         excluded_sellers_count=last.excluded_sellers_count,
                         excluded_sellers_digest=last.excluded_sellers_digest,
+                        truncated=last.truncated,
+                        query_signature=last.query_signature,
                     )
                 ),
                 scan_count=int(counts.get(query.id, 0)),
@@ -1058,6 +1155,8 @@ def overview(session: Session) -> Overview:
             error=scan.error,
             excluded_sellers_count=scan.excluded_sellers_count,
             excluded_sellers_digest=scan.excluded_sellers_digest,
+            truncated=scan.truncated,
+            query_signature=scan.query_signature,
         )
         for scan in session.scalars(
             select(Scan).order_by(Scan.started_at.desc()).limit(10)

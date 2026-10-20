@@ -331,3 +331,43 @@ class TestDealFeedFiltering:
             ("memory-q", 1),
             ("nic-q", 1),
         ]
+
+
+class TestWindowAndDefinitionDiscontinuities:
+    def rows(
+        self, values: list[tuple[bool | None, str | None]]
+    ) -> list[views.ScanRow]:
+        return [
+            views.ScanRow(
+                id=index,
+                started_at=BASE_TIME + timedelta(hours=index),
+                status=ScanStatus.COMPLETE,
+                result_count=10,
+                excluded_low_feedback=0,
+                min_seller_feedback=1,
+                api_calls=1,
+                capped=False,
+                error=None,
+                truncated=truncated,
+                query_signature=signature,
+            )
+            for index, (truncated, signature) in enumerate(values)
+        ]
+
+    def test_a_switch_from_window_to_whole_set_is_marked(self) -> None:
+        scans = self.rows([(None, None), (True, "a"), (True, "a"), (False, "a")])
+        markers = views.sampling_window_discontinuities(scans)
+        assert [marker.note for marker in markers] == ["page-budget window to whole result set"]
+        assert markers[0].at == BASE_TIME + timedelta(hours=3)
+
+    def test_unrecorded_scans_are_not_a_change(self) -> None:
+        scans = self.rows([(None, None), (False, "a"), (None, None), (False, "a")])
+        assert views.sampling_window_discontinuities(scans) == []
+        assert views.query_definition_discontinuities(scans) == []
+
+    def test_a_query_edit_is_marked(self) -> None:
+        scans = self.rows([(True, "a"), (False, "b"), (False, "b")])
+        markers = views.query_definition_discontinuities(scans)
+        assert [(marker.kind, marker.at) for marker in markers] == [
+            (views.DiscontinuityKind.QUERY_DEFINITION, BASE_TIME + timedelta(hours=1))
+        ]

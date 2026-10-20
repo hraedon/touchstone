@@ -276,6 +276,105 @@ def test_capped_scan_records_capped_and_suppresses_disappearances(
     assert session.scalars(select(ListingDisappearance)).all() == []
 
 
+def test_a_scan_stopped_at_its_page_budget_is_truncated_and_suppresses_disappearances(
+    session: Session, make_query: MakeQuery
+) -> None:
+    """Short of eBay's total, the scan read a best-match window: an item that slid
+    past its last page has not left the market. Before this was recorded, such
+    scans were diffed as if whole."""
+    fake = FakeEbay(
+        generations=[
+            Generation(items=[item("v1|1|0", price=100.0)], reported_total=500),
+            Generation(items=[item("v1|9|0", price=100.0)], reported_total=500),
+        ]
+    )
+    url = fake.start()
+    query = make_query(max_pages=1)
+    try:
+        first = run(session, fake, query, url)
+        fake.advance()
+        second = run(session, fake, query, url)
+    finally:
+        fake.stop()
+
+    assert (first.capped, first.truncated) == (False, True)
+    assert (second.capped, second.truncated) == (False, True)
+    assert second.disappearances == 0
+    assert session.scalars(select(ListingDisappearance)).all() == []
+
+
+def test_a_scan_that_reaches_ebays_total_is_whole(
+    session: Session, make_query: MakeQuery
+) -> None:
+    fake = FakeEbay(generations=[Generation(items=[item("v1|1|0", price=100.0)])])
+    url = fake.start()
+    query = make_query(max_pages=1)
+    try:
+        result = run(session, fake, query, url)
+    finally:
+        fake.stop()
+    scan = session.get(Scan, result.scan_id)
+    assert scan is not None
+    assert (scan.capped, scan.truncated) == (False, False)
+    assert scan.query_signature is not None
+
+
+def test_no_disappearances_across_a_query_edit(
+    session: Session, make_query: MakeQuery
+) -> None:
+    """New keywords measure a different population; what the old definition saw
+    and the new one does not is a change in the question, not the market."""
+    fake = FakeEbay(
+        generations=[
+            Generation(items=[item("v1|1|0", price=100.0), item("v1|2|0", price=100.0)]),
+            Generation(items=[item("v1|1|0", price=100.0)]),
+        ]
+    )
+    url = fake.start()
+    query = make_query()
+    try:
+        first = run(session, fake, query, url)
+        query.category_ids = "170083"
+        session.flush()
+        fake.advance()
+        second = run(session, fake, query, url)
+    finally:
+        fake.stop()
+
+    assert second.disappearances == 0
+    before, after = session.get(Scan, first.scan_id), session.get(Scan, second.scan_id)
+    assert before is not None and after is not None
+    assert before.query_signature != after.query_signature
+
+
+def test_a_baseline_recorded_before_truncation_was_tracked_is_not_diffed(
+    session: Session, make_query: MakeQuery
+) -> None:
+    """Whether an old scan was cut short cannot be known after the fact, so the
+    first scan after the migration does not diff against it."""
+    fake = FakeEbay(
+        generations=[
+            Generation(items=[item("v1|1|0", price=100.0), item("v1|2|0", price=100.0)]),
+            Generation(items=[item("v1|1|0", price=100.0)]),
+        ]
+    )
+    url = fake.start()
+    query = make_query()
+    try:
+        first = run(session, fake, query, url)
+        legacy = session.get(Scan, first.scan_id)
+        assert legacy is not None
+        legacy.truncated = None
+        legacy.query_signature = None
+        session.flush()
+        fake.advance()
+        second = run(session, fake, query, url)
+    finally:
+        fake.stop()
+
+    assert second.disappearances == 0
+
+
 def test_aggregates_survive_a_listing_deletion_unchanged(
     session: Session, make_query: MakeQuery
 ) -> None:

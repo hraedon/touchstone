@@ -116,6 +116,8 @@ def cmd_scan(args: argparse.Namespace) -> int:
             session.commit()
 
     capped = "  [CAPPED: result set exceeds 10,000; narrow the filter]" if result.capped else ""
+    if result.truncated:
+        capped = "  [TRUNCATED: stopped at the page budget before eBay's total; raise max_pages]"
     excluded = (
         f", {result.excluded_low_feedback} excluded (low seller feedback)"
         if result.excluded_low_feedback
@@ -209,7 +211,7 @@ def cmd_scans(args: argparse.Namespace) -> int:
             print("no scans yet")
             return 0
         for scan in rows:
-            flag = " CAPPED" if scan.capped else ""
+            flag = " CAPPED" if scan.capped else " TRUNCATED" if scan.truncated else ""
             print(
                 f"{scan.id:>5}  q={scan.query_id:<4} {scan.started_at.isoformat()}  "
                 f"{_describe(scan.status):<16} n={scan.result_count:<6} "
