@@ -313,6 +313,7 @@ def test_a_planted_cheap_ssd_is_flagged_in_a_per_tb_cohort(
     (deal,) = session.scalars(select(Deal)).all()
     assert deal.unit == PriceUnit.TB
     assert deal.cohort_key.startswith("sto|type=SSD|cap=3.84|iface=NVMe|form=U.2")
+    assert deal.per_unit is not None
     assert float(deal.per_unit) == pytest.approx(60.0 / 3.84, rel=1e-3)
 
 
@@ -343,5 +344,6 @@ def test_a_planted_cheap_e810_is_flagged_in_a_model_cohort(
     assert deal.unit == PriceUnit.ITEM
     assert deal.cohort_key == "itm|model=E810-XXVDA2|cond=3000"
     # Per item, the normalized price IS the delivered price.
+    assert deal.per_unit is not None
     assert float(deal.per_unit) == pytest.approx(180.0)
     assert deal.cohort_n == 9
