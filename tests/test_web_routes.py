@@ -258,6 +258,26 @@ class TestDeals:
         assert fresh.verify_requested_at is not None
         assert "Verification queued" in harness.client.get("/deals").text
 
+    def test_the_feed_filters_by_query_and_actions_keep_the_filter(
+        self, harness: WebHarness
+    ) -> None:
+        deal = self._seed_deal(harness)
+        other = make_query(harness.session, name="nic-q")
+        harness.session.commit()
+
+        everything = harness.client.get("/deals").text
+        assert "deals-q (1)" in everything
+        assert "ts-band" in everything
+
+        narrowed = harness.client.get(f"/deals?query={other.id}").text
+        assert "ts-band" not in narrowed
+
+        response = harness.client.post(
+            f"/deals/{deal.id}/dismiss?query={other.id}", follow_redirects=False
+        )
+        assert response.status_code == 303
+        assert response.headers["location"].endswith(f"/deals?query={other.id}")
+
     def test_a_deal_page_labels_prices_in_the_deal_own_unit(
         self, harness: WebHarness
     ) -> None:
@@ -314,7 +334,7 @@ class TestDeals:
         assert "ts-band" not in harness.client.get("/deals").text
         included = harness.client.get("/deals?dismissed=1").text
         assert "verified unavailable" in included
-        assert "no longer returns this listing" in included
+        assert "reports this listing ended" in included
 
 
 class TestSpecCorrection:

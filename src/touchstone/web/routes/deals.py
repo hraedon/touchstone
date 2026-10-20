@@ -37,42 +37,75 @@ def _band(view: views.DealView) -> charts.PriceBand | None:
     )
 
 
+FEED_LIMIT = 100
+
+
+def _feed_path(request: Request, *, query: int | None, dismissed: bool = False) -> str:
+    """The feed URL with the operator's filter kept, so an action does not reset it."""
+    params = [f"query={query}"] if query is not None else []
+    if dismissed:
+        params.append("dismissed=1")
+    path = request.url_for("deal_feed").path
+    return f"{path}?{'&'.join(params)}" if params else path
+
+
 @router.get("", name="deal_feed")
-def deal_feed(request: Request, session: DbSession, dismissed: int = 0) -> Any:
+def deal_feed(
+    request: Request, session: DbSession, dismissed: int = 0, query: int | None = None
+) -> Any:
     include = bool(dismissed)
-    feed = views.deal_feed(session, include_dismissed=include)
+    # The facets count the whole feed, not the filtered slice, so the filter bar
+    # always shows where every flag lives.
+    everything = views.deal_feed(session, include_dismissed=include, limit=None)
+    facets = views.deal_facets(everything)
+    shown = [
+        view
+        for view in everything
+        if query is None or (view.query is not None and view.query.id == query)
+    ]
     return render(
         request,
         "deals.html",
-        deals=[{"view": view, "band": _band(view)} for view in feed],
+        deals=[{"view": view, "band": _band(view)} for view in shown[:FEED_LIMIT]],
         include_dismissed=include,
+        facets=facets,
+        selected_query=query,
+        total=len(everything),
+        shown_total=len(shown),
+        feed_limit=FEED_LIMIT,
     )
 
 
 @router.post("/{deal_id}/dismiss", name="deal_dismiss")
-def deal_dismiss(deal_id: int, request: Request, session: DbSession) -> Any:
+def deal_dismiss(
+    deal_id: int, request: Request, session: DbSession, query: int | None = None
+) -> Any:
     deal = session.get(Deal, deal_id)
     if deal is None:
         raise not_found("deal")
     deal.dismissed_at = datetime.now(UTC)
     session.commit()
     flash(request, "Deal dismissed.")
-    return redirect(request.url_for("deal_feed").path)
+    return redirect(_feed_path(request, query=query))
 
 
 @router.post("/{deal_id}/restore", name="deal_restore")
-def deal_restore(deal_id: int, request: Request, session: DbSession) -> Any:
+def deal_restore(
+    deal_id: int, request: Request, session: DbSession, query: int | None = None
+) -> Any:
     deal = session.get(Deal, deal_id)
     if deal is None:
         raise not_found("deal")
     deal.dismissed_at = None
     session.commit()
     flash(request, "Deal restored.")
-    return redirect(request.url_for("deal_feed").path + "?dismissed=1")
+    return redirect(_feed_path(request, query=query, dismissed=True))
 
 
 @router.post("/{deal_id}/verify", name="deal_verify")
-def deal_verify(deal_id: int, request: Request, session: DbSession) -> Any:
+def deal_verify(
+    deal_id: int, request: Request, session: DbSession, query: int | None = None
+) -> Any:
     """Queue a ground-truth check of this deal's listing.
 
     This handler only records the request: the web tier holds no eBay
@@ -89,4 +122,4 @@ def deal_verify(deal_id: int, request: Request, session: DbSession) -> Any:
         flash(request, "Verification queued — the scanner will answer it on its next pass.")
     else:
         flash(request, "A verification of this deal is already queued.")
-    return redirect(request.url_for("deal_feed").path)
+    return redirect(_feed_path(request, query=query))

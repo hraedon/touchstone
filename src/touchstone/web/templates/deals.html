@@ -2,6 +2,7 @@
 {% from "_band.html" import price_band %}
 {% block title %}touchstone — deals{% endblock %}
 {% block content %}
+{% set qs = ('?query=' ~ selected_query) if selected_query is not none else '' %}
 <h1>Deal feed</h1>
 <p class="ts-sub">Listings priced anomalously low against their own cohort's asking distribution.</p>
 
@@ -19,18 +20,34 @@
   A flag also leaves this feed when its listing leaves the market — the same
   disappearance evidence the trend pages carry, which cannot tell a sale from an
   ended listing, so retired flags say <em>left the market</em> and nothing
-  stronger. <strong>Verify on eBay</strong> asks the scanner for ground truth
-  about one listing: one API call, answered on the scanner's next pass.
+  stronger. A query too broad to page through whole records no disappearances,
+  so the scanner also checks, unasked, any open flag its query's latest scan did
+  not see — one API call per flag, at most once a day — and retires it if eBay
+  reports the listing ended or out of stock. <strong>Verify on eBay</strong>
+  asks for the same check now, answered on the scanner's next pass.
 </div>
 
 <div class="ts-panel">
-  <div class="ts-actions">
+  <form class="ts-actions" method="get" action="{{ url_for('deal_feed') }}">
+    <label for="deal-query">Query</label>
+    <select id="deal-query" name="query">
+      <option value=""{% if selected_query is none %} selected{% endif %}>All queries ({{ total }})</option>
+      {% for facet in facets %}
+        <option value="{{ facet.query.id }}"{% if selected_query == facet.query.id %} selected{% endif %}>{{ facet.query.name }} ({{ facet.count }})</option>
+      {% endfor %}
+    </select>
+    {% if include_dismissed %}<input type="hidden" name="dismissed" value="1">{% endif %}
+    <button type="submit" class="subtle">Filter</button>
+    <span class="ts-spacer"></span>
     {% if include_dismissed %}
-      <a href="{{ url_for('deal_feed') }}">Show open only</a>
+      <a href="{{ url_for('deal_feed') }}{{ qs }}">Show open only</a>
     {% else %}
-      <a href="{{ url_for('deal_feed') }}?dismissed=1">Include dismissed and retired</a>
+      <a href="{{ url_for('deal_feed') }}{{ (qs ~ '&') if qs else '?' }}dismissed=1">Include dismissed and retired</a>
     {% endif %}
-  </div>
+  </form>
+  {% if shown_total > feed_limit %}
+    <p class="ts-panel-note">Showing the top {{ feed_limit }} of {{ shown_total }} by score.</p>
+  {% endif %}
 </div>
 
 {% for entry in deals %}
@@ -40,7 +57,7 @@
     <div class="ts-title">
       <div class="mono">{{ view.listing.title if view.listing else view.deal.listing_id }}</div>
       <div class="muted mono" style="font-size: var(--fs-xs)">
-        {{ view.deal.cohort_key }}
+        {% if view.query and selected_query is none %}{{ view.query.name }} · {% endif %}{{ view.deal.cohort_key }}
         {% if view.listing and view.listing.condition %} · {{ view.listing.condition }}{% endif %}
       </div>
     </div>
@@ -53,16 +70,16 @@
         <button type="submit" class="subtle">Pin</button>
       </form>
       {% if not view.verify_queued %}
-        <form class="inline" method="post" action="{{ url_for('deal_verify', deal_id=view.deal.id) }}">
+        <form class="inline" method="post" action="{{ url_for('deal_verify', deal_id=view.deal.id) }}{{ qs }}">
           <button type="submit" class="subtle">Verify on eBay</button>
         </form>
       {% endif %}
       {% if view.dismissed %}
-        <form class="inline" method="post" action="{{ url_for('deal_restore', deal_id=view.deal.id) }}">
+        <form class="inline" method="post" action="{{ url_for('deal_restore', deal_id=view.deal.id) }}{{ qs }}">
           <button type="submit" class="subtle">Restore</button>
         </form>
       {% elif not view.retired %}
-        <form class="inline" method="post" action="{{ url_for('deal_dismiss', deal_id=view.deal.id) }}">
+        <form class="inline" method="post" action="{{ url_for('deal_dismiss', deal_id=view.deal.id) }}{{ qs }}">
           <button type="submit" class="subtle">Dismiss</button>
         </form>
       {% endif %}
@@ -79,7 +96,8 @@
       the listing again, the flag returns to the open feed on its own.
     {% elif view.availability == 'verified_unavailable' %}
       <span class="ts-badge ts-badge--warn">verified unavailable</span>
-      Verified on {{ view.verified_at | stamp }}: eBay no longer returns this listing.
+      Checked on {{ view.verified_at | stamp }}: eBay reports this listing ended,
+      out of stock, or no longer returns it.
     {% elif view.availability == 'verify_queued' %}
       <span class="ts-badge ts-badge--accent">verification queued</span>
       The scanner will check this listing against eBay on its next pass.

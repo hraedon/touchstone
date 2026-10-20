@@ -131,6 +131,7 @@ class TickResult:
     listings: int = 0
     deals: int = 0
     verified: int = 0
+    verified_unasked: int = 0
     verifications_queued: int = 0
     stopped_on_budget: bool = False
     lock_held_elsewhere: bool = False
@@ -147,7 +148,7 @@ class TickResult:
             f"{self.api_calls} API calls",
         ]
         if self.verified:
-            parts.append(f"{self.verified} verified")
+            parts.append(f"{self.verified} verified ({self.verified_unasked} unasked)")
         if self.verifications_queued:
             parts.append(f"{self.verifications_queued} verifications queued")
         if self.failed:
@@ -249,14 +250,16 @@ def run_tick(
         else:
             result.failed += 1
 
-    # Availability verifications the operator queued from the UI. After the
-    # scans, so sampling is never displaced by it; inside the same lock and
-    # allowance, so two passes cannot answer one request twice.
+    # Availability verifications: the operator's queued requests, then unasked
+    # checks of open flags their own query no longer sees. After the scans, so
+    # sampling is never displaced by it; inside the same lock and allowance, so
+    # two passes cannot answer one request twice.
     if not result.stopped_on_budget:
         verify = run_verification(session, client, guard=guard)
         session.commit()
         guard.committed()
         result.verified = verify.verified
+        result.verified_unasked = verify.automatic
         result.verifications_queued = verify.left_queued
         result.api_calls += verify.api_calls
 

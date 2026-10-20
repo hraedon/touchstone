@@ -266,3 +266,68 @@ class TestDealFeedAvailability:
         session.flush()
 
         assert [view.availability for view in views.deal_feed(session)] == ["open"]
+
+
+class TestDealFeedFiltering:
+    """The feed trims after retirement and can be narrowed to one query."""
+
+    def flag(
+        self, session: Session, query: Query, item_id: str, *, score: float
+    ) -> Deal:
+        scan = make_scan(session, query)
+        listing = make_listing(session, item_id, f"{RDIMM_TITLE} {item_id}")
+        listing.last_seen_at = BASE_TIME + timedelta(hours=1)
+        deal = Deal(
+            listing_id=listing.item_id,
+            scan_id=scan.id,
+            cohort_key="gen=DDR4|cap=32|cond=3000",
+            total_cost=38.0,
+            per_unit=1.1875,
+            cohort_p10=1.8,
+            cohort_n=14,
+            score=score,
+        )
+        session.add(deal)
+        session.flush()
+        return deal
+
+    def test_retired_flags_do_not_use_up_the_limit(self, session: Session) -> None:
+        """Trimming before retirement let higher-scored retired flags fill every
+        slot, leaving the open feed empty with open flags sitting below them."""
+        query = make_query(session, name="limit-q")
+        for item_id, score in (("v1|r1|0", 9.0), ("v1|r2|0", 8.0)):
+            retired = self.flag(session, query, item_id, score=score)
+            retired.verified_at = BASE_TIME + timedelta(hours=2)
+            retired.verify_outcome = VerifyOutcome.UNAVAILABLE
+        open_deal = self.flag(session, query, "v1|open|0", score=1.5)
+        session.flush()
+
+        feed = views.deal_feed(session, limit=1)
+        assert [view.deal.id for view in feed] == [open_deal.id]
+
+    def test_a_query_filter_shows_only_that_querys_flags(self, session: Session) -> None:
+        memory = make_query(session, name="memory-q")
+        nics = make_query(session, name="nic-q")
+        self.flag(session, memory, "v1|m1|0", score=5.0)
+        self.flag(session, memory, "v1|m2|0", score=4.0)
+        nic = self.flag(session, nics, "v1|n1|0", score=1.1)
+
+        feed = views.deal_feed(session, query_id=nics.id)
+        assert [view.deal.id for view in feed] == [nic.id]
+        assert feed[0].query is not None and feed[0].query.name == "nic-q"
+
+    def test_facets_count_each_querys_open_flags(self, session: Session) -> None:
+        memory = make_query(session, name="memory-q")
+        nics = make_query(session, name="nic-q")
+        self.flag(session, memory, "v1|m1|0", score=5.0)
+        gone = self.flag(session, memory, "v1|m2|0", score=4.0)
+        gone.verified_at = BASE_TIME + timedelta(hours=2)
+        gone.verify_outcome = VerifyOutcome.UNAVAILABLE
+        self.flag(session, nics, "v1|n1|0", score=1.1)
+        session.flush()
+
+        facets = views.deal_facets(views.deal_feed(session, limit=None))
+        assert [(facet.query.name, facet.count) for facet in facets] == [
+            ("memory-q", 1),
+            ("nic-q", 1),
+        ]

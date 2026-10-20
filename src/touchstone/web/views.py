@@ -687,6 +687,8 @@ class DealView:
     availability: AvailabilityState = AvailabilityState.OPEN
     left_market_at: datetime | None = None
     verified_at: datetime | None = None
+    # The query whose scan raised the flag.
+    query: Query | None = None
 
     @property
     def per_unit(self) -> float | None:
@@ -710,14 +712,36 @@ class DealView:
         return self.availability in HIDDEN_FROM_OPEN_FEED
 
 
-def deal_feed(session: Session, *, include_dismissed: bool = False, limit: int = 100
-              ) -> list[DealView]:
-    stmt = select(Deal).order_by(Deal.score.desc()).limit(limit)
+def deal_feed(
+    session: Session,
+    *,
+    include_dismissed: bool = False,
+    query_id: int | None = None,
+    limit: int | None = 100,
+) -> list[DealView]:
+    """Flags in score order, optionally for one query, after retirement.
+
+    ``limit`` trims the result *after* retired flags are dropped. Trimming in
+    SQL first would let a hundred retired flags fill every slot and leave the
+    open feed empty while open flags sit unshown below them.
+    """
+    stmt = select(Deal).order_by(Deal.score.desc(), Deal.id)
     if not include_dismissed:
         stmt = stmt.where(Deal.dismissed_at.is_(None))
+    if query_id is not None:
+        stmt = stmt.join(Scan, Scan.id == Deal.scan_id).where(Scan.query_id == query_id)
     deals = list(session.scalars(stmt))
     if not deals:
         return []
+
+    query_of_scan: dict[int, Query] = {
+        scan_id: query
+        for scan_id, query in session.execute(
+            select(Scan.id, Query)
+            .join(Query, Query.id == Scan.query_id)
+            .where(Scan.id.in_({d.scan_id for d in deals}))
+        ).tuples()
+    }
 
     listings = {
         listing.item_id: listing
@@ -791,13 +815,37 @@ def deal_feed(session: Session, *, include_dismissed: bool = False, limit: int =
                 ),
                 left_market_at=gone_at.get(deal.listing_id),
                 verified_at=deal.verified_at,
+                query=query_of_scan.get(deal.scan_id),
             )
         )
     if not include_dismissed:
         # Manual dismissal is filtered in the query above; these retire on the
         # recorded evidence instead, and return on their own if it changes.
         views = [view for view in views if not view.retired]
-    return views
+    return views if limit is None else views[:limit]
+
+
+@dataclass(frozen=True)
+class DealFacet:
+    """One query's share of the feed, for the filter bar."""
+
+    query: Query
+    count: int
+
+
+def deal_facets(views: list[DealView]) -> list[DealFacet]:
+    """Per-query counts of an already-filtered feed, largest first."""
+    counts: dict[int, int] = defaultdict(int)
+    queries: dict[int, Query] = {}
+    for view in views:
+        if view.query is None:
+            continue
+        counts[view.query.id] += 1
+        queries[view.query.id] = view.query
+    return sorted(
+        (DealFacet(query=queries[qid], count=n) for qid, n in counts.items()),
+        key=lambda facet: (-facet.count, facet.query.name),
+    )
 
 
 # ---------------------------------------------------------------------------
