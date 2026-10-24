@@ -108,6 +108,47 @@ class TestDisappearancesAreADifferentObject:
         assert charts.disappearance_plot([]).empty
 
 
+class TestRequestedTimeWindow:
+    WINDOW = (T0 - timedelta(days=10), T0 + timedelta(days=10))
+
+    def test_old_observations_do_not_stretch_to_the_present(self) -> None:
+        plot = charts.line_plot([_line([1.0, 2.0])], time_range=self.WINDOW)
+        assert plot.lines[0].dots[0].x == pytest.approx((plot.left + plot.right) / 2)
+        assert plot.lines[0].dots[-1].x < plot.right
+        assert [tick.label for tick in plot.x_ticks] == ["22 Jul", "11 Aug"]
+
+    def test_one_old_disappearance_sits_on_its_actual_date(self) -> None:
+        plot = charts.disappearance_plot([(T0, 3)], time_range=self.WINDOW)
+        bar = plot.bars[0]
+        assert bar.x + bar.width / 2 == pytest.approx((plot.left + plot.right) / 2)
+        assert [tick.label for tick in plot.x_ticks] == ["22 Jul", "11 Aug"]
+
+    def test_coincident_observations_align_across_both_panels(self) -> None:
+        asking = charts.line_plot([_line([2.0])], time_range=self.WINDOW)
+        gone = charts.disappearance_plot([(T0, 3)], time_range=self.WINDOW)
+        assert asking.lines[0].dots[0].x == pytest.approx(
+            gone.bars[0].x + gone.bars[0].width / 2
+        )
+
+    def test_samples_outside_the_requested_window_are_not_drawn(self) -> None:
+        window = (T0 + timedelta(hours=12), T0 + timedelta(days=2))
+        plot = charts.line_plot([_line([1.0, 2.0, 3.0, 4.0])], time_range=window)
+        assert [dot.value for dot in plot.lines[0].dots] == [2.0, 3.0]
+        gone = charts.disappearance_plot(
+            [(T0, 1), (T0 + timedelta(days=1), 2), (T0 + timedelta(days=3), 3)],
+            time_range=window,
+        )
+        assert [bar.count for bar in gone.bars] == [2]
+
+    @pytest.mark.parametrize("offset", [0, -1])
+    def test_a_nonpositive_window_is_rejected(self, offset: int) -> None:
+        window = (T0, T0 + timedelta(days=offset))
+        with pytest.raises(ValueError, match="time range"):
+            charts.line_plot([_line([1.0])], time_range=window)
+        with pytest.raises(ValueError, match="time range"):
+            charts.disappearance_plot([(T0, 1)], time_range=window)
+
+
 class TestPriceBand:
     def test_the_marker_sits_left_of_the_band_when_below_p10(self) -> None:
         band = charts.price_band(marked=1.0, p10=1.5, median=2.5, minimum=1.0, n=12)
