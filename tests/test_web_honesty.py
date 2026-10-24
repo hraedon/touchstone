@@ -8,19 +8,22 @@ against rendered HTML, which is the only place a label actually reaches a reader
 from __future__ import annotations
 
 import re
+from datetime import timedelta
 
 import pytest
 from sqlalchemy import delete
 
 from tests.conftest import WebHarness
 from tests.factories import (
+    BASE_TIME,
     make_aggregate,
     make_listing,
     make_observation,
     make_query,
     make_scan,
 )
-from touchstone.db.models import Listing, ListingObservation, ScanStatus
+from touchstone.db.models import Listing, ListingDisappearance, ListingObservation, ScanStatus
+from touchstone.web import views
 
 # Phrases that would turn an asking-price index into a claim touchstone cannot make.
 # "worth" and "value" are here because they are how the claim gets made accidentally:
@@ -230,6 +233,38 @@ class TestDisappearanceSeparation:
         # It may say a listing *may have* sold; it may never report a sale.
         assert "sold for" not in body.lower()
         assert "sold price" not in body.lower()
+
+    def test_all_trend_panels_show_the_full_selected_window(
+        self, harness: WebHarness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        query_id = _seed_trend(harness)
+        start = BASE_TIME - timedelta(days=20)
+        monkeypatch.setattr(views, "default_since", lambda days: start)
+        harness.session.add(
+            ListingDisappearance(
+                listing_item_id="v1|100|0",
+                query_id=query_id,
+                cohort_key="synthetic-cohort",
+                last_seen_at=BASE_TIME,
+                detected_at=BASE_TIME + timedelta(days=1),
+                last_price=42.0,
+                currency="USD",
+            )
+        )
+        harness.session.commit()
+
+        response = harness.client.get(f"/queries/{query_id}/trend?days=30")
+        assert response.status_code == 200
+        plots = [panel["plot"] for panel in response.context["panels"]]
+        plots.append(response.context["disappearance_plot"])
+        expected = [start.strftime("%d %b"), (start + timedelta(days=30)).strftime("%d %b")]
+        assert all([tick.label for tick in plot.x_ticks] == expected for plot in plots)
+        assert all(
+            dot.x < plot.right
+            for plot in plots[:-1]
+            for line in plot.lines
+            for dot in line.dots
+        )
 
 
 class TestAggregatesAreNeverRecomputed:

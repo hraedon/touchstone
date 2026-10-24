@@ -22,6 +22,7 @@ same chart drawn after retention pruning.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -105,10 +106,14 @@ def query_trend(
             status_code=HTTP_400_BAD_REQUEST,
         )
 
+    since = views.default_since(days)
+    # Capture one interval for every panel: sparse or stale series must retain
+    # the blank time after their last observation rather than appearing current.
+    time_range = (since, since + timedelta(days=days))
     trend = views.query_trend(
         session,
         query_id,
-        since=views.default_since(days),
+        since=since,
         cohort_key=cohort,
     )
     if trend is None:
@@ -125,6 +130,7 @@ def query_trend(
                 _metric_lines(series, metric),
                 discontinuities=rules,
                 flagged=tuple(p.observed_at for p in series.points if p.windowed),
+                time_range=time_range,
             ),
         }
         for series in charted
@@ -137,7 +143,8 @@ def query_trend(
         panels=panels,
         hidden_series=trend.series[MAX_SERIES_CHARTED:],
         disappearance_plot=charts.disappearance_plot(
-            [(point.detected_at, point.count) for point in trend.disappearances]
+            [(point.detected_at, point.count) for point in trend.disappearances],
+            time_range=time_range,
         ),
         days=days,
         window_choices=WINDOW_CHOICES,

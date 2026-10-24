@@ -129,11 +129,17 @@ def _money(value: float) -> str:
     return f"{value:.3f}"
 
 
+def _validate_time_range(time_range: tuple[datetime, datetime] | None) -> None:
+    if time_range is not None and time_range[1] <= time_range[0]:
+        raise ValueError("time range must end after it starts")
+
+
 def line_plot(
     lines: Sequence[LineSpec],
     *,
     discontinuities: Sequence[tuple[datetime, str, str]] = (),
     flagged: Sequence[datetime] = (),
+    time_range: tuple[datetime, datetime] | None = None,
     width: int = WIDTH,
     height: int = HEIGHT,
 ) -> Plot:
@@ -143,7 +149,22 @@ def line_plot(
     show past 10,000 results, so that scan sampled a moving window rather than the
     whole population. The point is still real and is still drawn; it is marked so a
     step in the series is not read as a market move.
+
+    ``time_range`` fixes the visible interval even when observations cover only a
+    small part of it. Samples outside it are omitted. Without it, the extent of the
+    samples determines the interval, as on a listing's observation history.
     """
+    _validate_time_range(time_range)
+    if time_range is not None:
+        start, end = time_range
+        lines = tuple(
+            LineSpec(
+                label=line.label,
+                role=line.role,
+                samples=tuple(sample for sample in line.samples if start <= sample.at <= end),
+            )
+            for line in lines
+        )
     left, right = float(PAD_LEFT), float(width - PAD_RIGHT)
     top, bottom = float(PAD_TOP), float(height - PAD_BOTTOM)
 
@@ -168,7 +189,7 @@ def line_plot(
             y_ticks=(),
         )
 
-    t_min, t_max = min(times), max(times)
+    t_min, t_max = time_range if time_range is not None else (min(times), max(times))
     span = (t_max - t_min).total_seconds()
     v_low, v_high = _nice_bounds(min(values), max(values))
 
@@ -271,6 +292,7 @@ class BarPlot:
 def disappearance_plot(
     points: Sequence[tuple[datetime, int]],
     *,
+    time_range: tuple[datetime, datetime] | None = None,
     width: int = WIDTH,
     height: int = 130,
 ) -> BarPlot:
@@ -280,7 +302,15 @@ def disappearance_plot(
     listings that stopped appearing; whether any of them sold is unknown and
     unknowable from the Browse API. Drawing it like the asking series would invite
     exactly the reading the schema refuses to support.
+
+    With ``time_range``, stale detections stay at their actual position in the
+    requested window instead of expanding to fill it. No zero-count observations
+    are invented for the remaining interval.
     """
+    _validate_time_range(time_range)
+    if time_range is not None:
+        start, end = time_range
+        points = tuple((at, count) for at, count in points if start <= at <= end)
     left, right = float(PAD_LEFT), float(width - PAD_RIGHT)
     top, bottom = float(PAD_TOP), float(height - PAD_BOTTOM)
     if not points:
@@ -297,7 +327,7 @@ def disappearance_plot(
         )
 
     times = [at for at, _ in points]
-    t_min, t_max = min(times), max(times)
+    t_min, t_max = time_range if time_range is not None else (min(times), max(times))
     span = (t_max - t_min).total_seconds()
     peak = max(count for _, count in points) or 1
     slot = (right - left) / max(len(points), 1)
