@@ -38,9 +38,9 @@
 
 {% if view.spec %}
 <div class="ts-panel">
-  <h3>Capacity parse</h3>
+  <h3>Spec parse</h3>
   <p class="ts-panel-note">
-    {{ view.spec.total_gb if view.spec.total_gb is not none else '?' }} GB total, read by
+    {{ view.spec.normalization_summary }}, read by
     <span class="mono">{{ view.spec.method_label }}</span>
     {% if view.spec.confidence is not none %}at confidence {{ view.spec.confidence | money(2) }}{% endif %}.
     <a href="{{ url_for('spec_edit', title_hash=view.spec.title_hash) }}">Correct this</a>.

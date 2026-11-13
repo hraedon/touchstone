@@ -3,29 +3,37 @@
 {% block title %}touchstone — deals{% endblock %}
 {% block content %}
 {% set qs = ('?query=' ~ selected_query) if selected_query is not none else '' %}
-<h1>Deal feed</h1>
-<p class="ts-sub">Listings priced anomalously low against their own cohort's asking distribution.</p>
+<header class="ts-page-head">
+  <div>
+    <div class="ts-eyebrow">Investigation</div>
+    <h1>Deal review</h1>
+    <p class="ts-sub">Listings priced anomalously low against their own cohort’s asking distribution.</p>
+  </div>
+  <div class="ts-page-actions">
+    <a class="ts-button" href="{{ url_for('spec_worklist') }}">Review specs</a>
+  </div>
+</header>
 
-<div class="ts-preamble">
-  <strong>A flag here means "cheap relative to what similar listings are asking",
-  not "below market".</strong> The reference distribution is built from active
-  asking prices, which skew high, so this is a weaker and more conservative claim
-  than it may look. Being the cheapest in a cohort is arithmetic, not a signal — in
-  any cohort of two or more, something is below p10 — so a listing must also sit at
-  least {{ MIN_SCORE }} spread-unit below the tenth percentile, in a cohort of at
-  least {{ MIN_COHORT_N }}, with a capacity parse that has been trusted or corrected.
-</div>
-
-<div class="ts-preamble">
-  A flag also leaves this feed when its listing leaves the market — the same
-  disappearance evidence the trend pages carry, which cannot tell a sale from an
-  ended listing, so retired flags say <em>left the market</em> and nothing
-  stronger. A query too broad to page through whole records no disappearances,
-  so the scanner also checks, unasked, any open flag its query's latest scan did
-  not see — one API call per flag, at most once a day — and retires it if eBay
-  reports the listing ended or out of stock. <strong>Verify on eBay</strong>
-  asks for the same check now, answered on the scanner's next pass.
-</div>
+<details class="ts-explainer">
+  <summary>Scoring and verification methodology</summary>
+  <div class="ts-explainer-body">
+    <p><strong>A flag here means "cheap relative to what similar listings are asking",
+    not "below market".</strong> The reference distribution is built from active
+    asking prices, which skew high, so this is a weaker and more conservative claim
+    than it may look. Being the cheapest in a cohort is arithmetic, not a signal — in
+    any cohort of two or more, something is below p10 — so a listing must also sit at
+    least {{ MIN_SCORE }} spread-unit below the tenth percentile, in a cohort of at
+    least {{ MIN_COHORT_N }}, with a spec parse that has been trusted or corrected.</p>
+    <p>A flag also leaves this feed when its listing leaves the market — the same
+    disappearance evidence the trend pages carry, which cannot tell a sale from an
+    ended listing, so retired flags say <em>left the market</em> and nothing
+    stronger. A query too broad to page through whole records no disappearances,
+    so the scanner also checks, unasked, any open flag its query's latest scan did
+    not see — one API call per flag, at most once a day — and retires it if eBay
+    reports the listing ended or out of stock. <strong>Verify on eBay</strong>
+    asks for the same check now, answered on the scanner's next pass.</p>
+  </div>
+</details>
 
 <div class="ts-panel">
   <form class="ts-actions" method="get" action="{{ url_for('deal_feed') }}">
@@ -145,18 +153,7 @@
   <div class="ts-panel-note" style="margin-top: var(--space-3)">
     <strong>Spec parse ({{ view.spec.category_label if view.spec else 'no spec' }}).</strong>
     {% if view.spec %}
-      {% if view.spec.category == 'memory' %}
-        {{ view.spec.total_gb if view.spec.total_gb is not none else '?' }} GB total
-        {% if view.spec.capacity_per_module_gb and view.spec.module_count %}
-          ({{ view.spec.module_count }} x {{ view.spec.capacity_per_module_gb }} GB){% endif %},
-      {% elif view.spec.category == 'storage' %}
-        {{ '%.2f' % view.spec.capacity_tb if view.spec.capacity_tb is not none else '?' }} TB
-        {{ view.spec.storage_type or '?' }} {{ view.spec.storage_iface or '?' }} {{ view.spec.storage_form or '' }}
-        {% if view.spec.module_count and view.spec.module_count > 1 %}({{ view.spec.module_count }} units){% endif %},
-      {% else %}
-        model <span class="mono">{{ view.spec.product_model or '?' }}</span>
-        {% if view.spec.module_count and view.spec.module_count > 1 %}({{ view.spec.module_count }} units){% endif %},
-      {% endif %}
+      {{ view.spec.normalization_summary }},
       read by <span class="mono">{{ view.spec.method_label }}</span>
       {% if view.spec.confidence is not none %}at confidence {{ view.spec.confidence | money(2) }}{% endif %}
       {% if view.spec.corrected_by %}(corrected by {{ view.spec.corrected_by }}){% endif %}.

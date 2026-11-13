@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}touchstone — correct spec{% endblock %}
 {% block content %}
-<h1>Correct a capacity parse</h1>
+<h1>Correct a spec parse</h1>
 <p class="ts-sub mono ts-title">{{ title }}</p>
 <p class="ts-sub">{{ listing_count }} listing(s) share this title and will all be re-cohorted.</p>
 
@@ -33,7 +33,7 @@
              value="{{ spec.capacity_per_module_gb if spec and spec.capacity_per_module_gb is not none else '' }}">
     </div>
     <div class="ts-field">
-      <label for="total_gb">Total GB</label>
+      <label for="total_gb">Total GB (memory)</label>
       <input id="total_gb" name="total_gb" type="number" min="1"
              value="{{ spec.total_gb if spec and spec.total_gb is not none else '' }}">
       <span class="hint">Must equal per-module x modules if both are given.</span>

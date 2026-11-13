@@ -1,18 +1,23 @@
 {% extends "base.html" %}
 {% block title %}touchstone — queries{% endblock %}
 {% block content %}
-<h1>Tracked searches</h1>
-<p class="ts-sub">Each page of results is one API call against a shared daily allowance.</p>
-
-<div class="ts-panel">
-  <div class="ts-actions" style="justify-content: space-between">
-    <div>
-      <span class="ts-fig-label">Budget today (local ledger)</span>
-      <span class="ts-fig">{{ budget.calls_used }}/{{ budget.calls_limit }}</span>
-      <span class="muted">— {{ budget.usable }} usable after reserve; last reconciled with eBay {{ budget.last_authoritative_read | since }}</span>
-    </div>
-    <a href="{{ url_for('query_new') }}"><button type="button" class="strong">New query</button></a>
+<header class="ts-page-head">
+  <div>
+    <div class="ts-eyebrow">Collection</div>
+    <h1>Tracked searches</h1>
+    <p class="ts-sub">Define what to sample and how often. Each result page costs one API call.</p>
   </div>
+  <div class="ts-page-actions">
+    <a class="ts-button ts-button--strong" href="{{ url_for('query_new') }}">New search</a>
+  </div>
+</header>
+
+<div class="ts-panel ts-budget-inline">
+  <div>
+    <span class="ts-fig-label">Budget today · local ledger</span>
+    <span class="ts-fig">{{ budget.calls_used }}/{{ budget.calls_limit }}</span>
+  </div>
+  <span class="muted">{{ budget.usable }} usable after reserve · reconciled with eBay {{ budget.last_authoritative_read | since }}</span>
 </div>
 
 <div class="ts-panel">

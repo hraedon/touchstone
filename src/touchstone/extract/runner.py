@@ -109,7 +109,9 @@ def regex_candidate(title: str) -> SpecCandidate:
         return extract_regex(title)
     if looks_like_storage(title):
         return extract_storage_regex(title)
-    return extract_regex(title)
+    # No category signal means no deterministic claim. In particular, a complete
+    # computer can contain RAM-like capacity/speed text without being a DIMM.
+    return SpecCandidate(notes="no memory or storage signals")
 
 
 def run_extraction(

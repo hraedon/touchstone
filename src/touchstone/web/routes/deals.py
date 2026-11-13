@@ -1,11 +1,10 @@
 """The deal feed.
 
-A "deal" is a listing whose $/GB sits a full spread-unit below the tenth percentile
-of *asking* prices in its own cohort. It is not a claim about market value, and the
-page says so: the cohort context, the count it was computed over, and the capacity
-parse that produced the $/GB are all shown beside it, because a deal is only ever as
-trustworthy as the parse underneath it — misreading "Lot of 4 x 32GB" as a single
-32GB module manufactures a fourfold bargain out of nothing.
+A "deal" is a listing whose normalized per-unit price sits a full spread-unit below
+the tenth percentile of *asking* prices in its own cohort. It is not a claim about
+market value, and the page says so: the cohort context, count, unit, and spec parse are
+shown beside it, because a deal is only as trustworthy as that parse. Misreading a lot
+or model manufactures a bargain out of nothing and poisons the cohort reference.
 """
 
 from __future__ import annotations
@@ -84,6 +83,7 @@ def deal_dismiss(
     if deal is None:
         raise not_found("deal")
     deal.dismissed_at = datetime.now(UTC)
+    deal.verify_requested_at = None
     session.commit()
     flash(request, "Deal dismissed.")
     return redirect(_feed_path(request, query=query))

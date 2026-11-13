@@ -108,12 +108,21 @@ class FakeEbay:
     rate_limit_total: int = 5000
     # Set to fail the rate-limit read, to exercise the ledger fallback.
     rate_limit_fails: bool = False
+    rate_limit_body: dict[str, Any] | None = None
+    rate_limit_invalid_json: bool = False
+    # One-based search call numbers that should fail before returning a usable page.
+    search_http_failures: dict[int, int] = field(default_factory=dict)
+    search_transport_failures: set[int] = field(default_factory=set)
+    search_invalid_json: bool = False
+
+    token_fails: bool = False
 
     index: int = 0
     token_mints: int = field(default=0, init=False)
     search_calls: int = field(default=0, init=False)
     rate_limit_calls: int = field(default=0, init=False)
     filters_seen: list[str] = field(default_factory=list, init=False)
+    marketplaces_seen: list[str | None] = field(default_factory=list, init=False)
     # What GET /buy/browse/v1/item/{id} serves (see ``item_detail``), keyed by
     # item id. An id absent from the mapping gets the 404 the real API gives
     # once it stops returning a listing at all.
@@ -121,6 +130,7 @@ class FakeEbay:
     # Ids the item endpoint should fail on with a 500, to exercise the unknown
     # outcome: a transient failure is not evidence that a listing ended.
     item_endpoint_fails: set[str] = field(default_factory=set, init=False)
+    item_transport_failures: set[str] = field(default_factory=set, init=False)
     get_item_calls: list[str] = field(default_factory=list, init=False)
     _server: HTTPServer | None = field(default=None, init=False)
     _thread: threading.Thread | None = field(default=None, init=False)
@@ -142,7 +152,10 @@ class FakeEbay:
                 pass
 
             def _send(self, code: int, payload: dict[str, Any]) -> None:
-                body = json.dumps(payload).encode("utf-8")
+                self._send_text(code, json.dumps(payload))
+
+            def _send_text(self, code: int, payload: str) -> None:
+                body = payload.encode("utf-8")
                 self.send_response(code)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
@@ -154,6 +167,9 @@ class FakeEbay:
                     length = int(self.headers.get("Content-Length", 0))
                     self.rfile.read(length)
                     fake.token_mints += 1
+                    if fake.token_fails:
+                        self._send(503, {"error": "token endpoint unavailable"})
+                        return
                     self._send(200, {"access_token": "fake-token", "expires_in": 7200})
                     return
                 self._send(404, {"error": "not found"})
@@ -167,30 +183,31 @@ class FakeEbay:
                     if fake.rate_limit_fails or fake.rate_limit_remaining is None:
                         self._send(500, {"error": "rate limit unavailable"})
                         return
-                    self._send(
-                        200,
-                        {
-                            "rateLimits": [
-                                {
-                                    "apiName": "Browse",
-                                    "apiContext": "buy",
-                                    "resources": [
-                                        {
-                                            "name": "buy.browse",
-                                            "rates": [
-                                                {
-                                                    "limit": fake.rate_limit_total,
-                                                    "remaining": fake.rate_limit_remaining,
-                                                    "reset": "2026-08-31T00:00:00.000Z",
-                                                    "timeWindow": 86400,
-                                                }
-                                            ],
-                                        }
-                                    ],
-                                }
-                            ]
-                        },
-                    )
+                    if fake.rate_limit_invalid_json:
+                        self._send_text(200, "not JSON")
+                        return
+                    payload = fake.rate_limit_body if fake.rate_limit_body is not None else {
+                        "rateLimits": [
+                            {
+                                "apiName": "Browse",
+                                "apiContext": "buy",
+                                "resources": [
+                                    {
+                                        "name": "buy.browse",
+                                        "rates": [
+                                            {
+                                                "limit": fake.rate_limit_total,
+                                                "remaining": fake.rate_limit_remaining,
+                                                "reset": "2026-08-31T00:00:00.000Z",
+                                                "timeWindow": 86400,
+                                            }
+                                        ],
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                    self._send(200, payload)
                     return
 
                 if parsed.path.startswith("/buy/browse/v1/item/"):
@@ -198,6 +215,9 @@ class FakeEbay:
                     # a real server decodes before routing, so the fake does too.
                     item_id = unquote(parsed.path[len("/buy/browse/v1/item/") :])
                     fake.get_item_calls.append(item_id)
+                    if item_id in fake.item_transport_failures:
+                        self.connection.close()
+                        return
                     if item_id in fake.item_endpoint_fails:
                         self._send(500, {"error": "transient upstream failure"})
                         return
@@ -230,11 +250,24 @@ class FakeEbay:
 
                 if parsed.path == "/buy/browse/v1/item_summary/search":
                     fake.filters_seen.append(params.get("filter", [""])[0])
+                    fake.marketplaces_seen.append(self.headers.get("X-EBAY-C-MARKETPLACE-ID"))
                     fake.search_calls += 1
+                    if fake.search_calls in fake.search_transport_failures:
+                        self.connection.close()
+                        return
+                    if fake.search_calls in fake.search_http_failures:
+                        self._send(
+                            fake.search_http_failures[fake.search_calls],
+                            {"error": "injected search failure"},
+                        )
+                        return
                     limit = int((params.get("limit") or ["200"])[0])
                     offset = int((params.get("offset") or ["0"])[0])
                     generation = fake.current
                     window = generation.items[offset : offset + limit]
+                    if fake.search_invalid_json:
+                        self._send_text(200, "not JSON")
+                        return
                     self._send(
                         200,
                         {

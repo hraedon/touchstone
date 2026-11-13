@@ -711,10 +711,50 @@ class SpecView:
         return extraction_method_label(self.method)
 
     @property
+    def normalization_summary(self) -> str:
+        """The category-specific value from which normalized prices are derived."""
+        match self.category:
+            case None:
+                return "no category recorded"
+            case SpecCategory.MEMORY:
+                summary = (
+                    f"{self.total_gb} GB total"
+                    if self.total_gb is not None
+                    else "capacity unknown"
+                )
+                if self.capacity_per_module_gb and self.module_count:
+                    summary += (
+                        f" ({self.module_count} x {self.capacity_per_module_gb} GB)"
+                    )
+                return summary
+            case SpecCategory.STORAGE:
+                parts = [
+                    f"{self.capacity_tb:.2f} TB"
+                    if self.capacity_tb is not None
+                    else "capacity unknown",
+                    self.storage_type,
+                    self.storage_iface,
+                    self.storage_form,
+                ]
+                summary = " ".join(part for part in parts if part)
+                if self.module_count and self.module_count > 1:
+                    summary += f" ({self.module_count} units)"
+                return summary
+            case SpecCategory.OTHER:
+                summary = f"model {self.product_model or 'unknown'}"
+                if self.module_count and self.module_count > 1:
+                    summary += f" ({self.module_count} units)"
+                return summary
+            case _:
+                assert_never(self.category)
+
+    @property
     def usable(self) -> bool:
         """Whether the spec carries its own category's denominator."""
         match self.category:
-            case None | SpecCategory.MEMORY:
+            case None:
+                return False
+            case SpecCategory.MEMORY:
                 return self.total_gb is not None and self.total_gb > 0
             case SpecCategory.STORAGE:
                 return self.capacity_tb is not None and self.capacity_tb > 0
@@ -961,6 +1001,8 @@ class SpecWorkRow:
     def reason(self) -> str:
         if self.spec is None:
             return "no spec"
+        if self.spec.category is None:
+            return "no category"
         if not self.spec.usable:
             return "no model" if self.spec.category is SpecCategory.OTHER else "no capacity"
         return "low confidence"
@@ -1045,7 +1087,7 @@ class ObservationPoint:
         """Missing shipping is unknown, not free.
 
         Rendering an absent shipping cost as 0.00 would understate the delivered
-        price and bias every derived $/GB downward.
+        price and bias every derived per-unit price downward.
         """
         return self.shipping_cost is not None
 

@@ -19,6 +19,7 @@ from __future__ import annotations
 import base64
 import enum
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -67,6 +68,22 @@ SCOPE = "https://api.ebay.com/oauth/api_scope"
 # eBay's hard ceilings. Not tuning knobs.
 MAX_LIMIT = 200
 MAX_RESULT_SET = 10_000
+DEFAULT_BUYING_OPTIONS_FILTER = "buyingOptions:{AUCTION|FIXED_PRICE}"
+DAILY_RATE_WINDOW_SECONDS = 86_400
+_BUYING_OPTIONS_CLAUSE = re.compile(r"(?:\A|,)\s*buyingOptions\s*:", re.IGNORECASE)
+
+
+def _with_default_buying_options(filter_expr: str | None) -> str:
+    """Make Browse's sampled buying-option population explicit.
+
+    Browse otherwise returns only listings with FIXED_PRICE. An operator-supplied
+    buyingOptions clause is authoritative and is never replaced.
+    """
+    if filter_expr and _BUYING_OPTIONS_CLAUSE.search(filter_expr):
+        return filter_expr
+    return f"{filter_expr},{DEFAULT_BUYING_OPTIONS_FILTER}" if filter_expr else (
+        DEFAULT_BUYING_OPTIONS_FILTER
+    )
 
 
 class EbayError(RuntimeError):
@@ -217,7 +234,12 @@ class TokenCache:
         )
         if resp.status_code != 200:
             raise EbayError(f"token mint failed: {resp.status_code} {resp.text[:200]}")
-        body = resp.json()
+        try:
+            body = resp.json()
+        except ValueError as exc:
+            raise EbayError("token response was not JSON") from exc
+        if not isinstance(body, dict):
+            raise EbayError("token response was not a JSON object")
         token = body.get("access_token")
         if not token:
             raise EbayError("token response contained no access_token")
@@ -233,10 +255,12 @@ def _money(node: Any) -> tuple[float, str] | None:
     if not isinstance(node, dict):
         return None
     raw = node.get("value")
-    if raw is None:
+    currency = node.get("currency")
+    if raw is None or not isinstance(currency, str) or not currency.strip():
         return None
     try:
-        return float(raw), str(node.get("currency") or "USD")
+        # Currency is copied as returned. Absence is unknown, never an assumed USD.
+        return float(raw), currency
     except (TypeError, ValueError):
         return None
 
@@ -293,7 +317,9 @@ def parse_item_summary(
         first = options[0]
         if isinstance(first, dict):
             parsed = _money(first.get("shippingCost"))
-            if parsed is not None:
+            # ParsedListing has one currency. A shipping amount in any other
+            # currency cannot be represented or added without mislabeling it.
+            if parsed is not None and parsed[1] == currency:
                 shipping = parsed[0]
 
     # item["seller"] is deliberately not read. See ParsedListing.
@@ -367,10 +393,10 @@ class EbayClient:
     def __exit__(self, *exc: object) -> None:
         self.close()
 
-    def _headers(self) -> dict[str, str]:
+    def _headers(self, marketplace_id: str | None = None) -> dict[str, str]:
         return {
             "Authorization": f"Bearer {self.tokens.token()}",
-            "X-EBAY-C-MARKETPLACE-ID": self.marketplace_id,
+            "X-EBAY-C-MARKETPLACE-ID": marketplace_id or self.marketplace_id,
             "Accept": "application/json",
         }
 
@@ -383,6 +409,7 @@ class EbayClient:
         category_ids: str | None = None,
         filter_expr: str | None = None,
         min_seller_feedback: int = 0,
+        marketplace_id: str | None = None,
     ) -> SearchPage:
         """One Browse search call. Costs exactly one unit of the daily budget."""
         if limit > MAX_LIMIT:
@@ -392,11 +419,11 @@ class EbayClient:
             # cause is legible.
             raise ValueError(f"offset {offset} must be a multiple of limit {limit}")
 
+        effective_filter = _with_default_buying_options(filter_expr)
         params: dict[str, str] = {"q": q, "limit": str(limit), "offset": str(offset)}
         if category_ids:
             params["category_ids"] = category_ids
-        if filter_expr:
-            params["filter"] = filter_expr
+        params["filter"] = effective_filter
 
         # Logged by us, with the filter reduced to its shape. httpx logs the whole
         # request URL at INFO, and the filter can carry the operator's seller
@@ -410,17 +437,28 @@ class EbayClient:
             offset,
             limit,
             category_ids or "-",
-            _describe_filter(filter_expr),
+            _describe_filter(effective_filter),
         )
-        resp = self.http.get(
-            f"{self.base_url}/buy/browse/v1/item_summary/search",
-            params=params,
-            headers=self._headers(),
-        )
+        # A token/local-validation failure never dispatches Browse and costs nothing.
+        # Once dispatch begins, transport, HTTP, and parse failures all spend the call.
+        headers = self._headers(marketplace_id)
         self.calls_made += 1
+        try:
+            resp = self.http.get(
+                f"{self.base_url}/buy/browse/v1/item_summary/search",
+                params=params,
+                headers=headers,
+            )
+        except httpx.HTTPError as exc:
+            raise EbayError(f"search failed (transport): {exc}") from exc
         if resp.status_code != 200:
             raise EbayError(f"search failed: {resp.status_code} {resp.text[:300]}")
-        body = resp.json()
+        try:
+            body = resp.json()
+        except ValueError as exc:
+            raise EbayError("search response was not JSON") from exc
+        if not isinstance(body, dict):
+            raise EbayError("search response was not a JSON object")
 
         summaries = body.get("itemSummaries") or []
         listings: list[ParsedListing] = []
@@ -464,14 +502,15 @@ class EbayClient:
         """
         log.info("browse get_item: item_id=%s", item_id)
         try:
+            headers = self._headers()
+            self.calls_made += 1
             resp = self.http.get(
                 f"{self.base_url}/buy/browse/v1/item/{quote(item_id, safe='')}",
-                headers=self._headers(),
+                headers=headers,
             )
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, EbayError) as exc:
             log.warning("get_item failed (transport): %s", exc)
             return ItemAvailability.UNKNOWN
-        self.calls_made += 1
         if resp.status_code in (404, 410):
             return ItemAvailability.UNAVAILABLE
         if resp.status_code != 200:
@@ -488,11 +527,13 @@ class EbayClient:
             return ItemAvailability.UNKNOWN
         return outcome
 
-    def rate_limit(self, api_name: str = "Browse", api_context: str = "buy") -> RateLimit | None:
-        """Authoritative remaining quota, or None if it could not be read.
+    def rate_limit(self, api_name: str = "browse", api_context: str = "buy") -> RateLimit | None:
+        """Authoritative daily Browse quota, or None when the answer is ambiguous.
 
         None means "unknown", and callers must treat unknown as a reason to fall
-        back to the local ledger — never as permission to proceed unlimited.
+        back to the local ledger — never as permission to proceed unlimited. The
+        local ledger is daily, so an hourly or otherwise unidentified window cannot
+        be substituted for the daily rate merely because it appeared first.
         """
         try:
             resp = self.http.get(
@@ -500,22 +541,85 @@ class EbayClient:
                 params={"api_name": api_name, "api_context": api_context},
                 headers=self._headers(),
             )
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, EbayError) as exc:
             log.warning("rate limit read failed (transport): %s", exc)
             return None
         if resp.status_code != 200:
             log.warning("rate limit read failed: %s %s", resp.status_code, resp.text[:200])
             return None
+        try:
+            body = resp.json()
+        except ValueError:
+            log.warning("rate limit response was not JSON")
+            return None
+        if not isinstance(body, dict) or not isinstance(body.get("rateLimits"), list):
+            log.warning("rate limit response had no rateLimits list")
+            return None
 
-        for group in resp.json().get("rateLimits") or []:
-            for resource in group.get("resources") or []:
-                for rate in resource.get("rates") or []:
-                    if rate.get("limit") is None or rate.get("remaining") is None:
-                        continue
-                    return RateLimit(
-                        limit=int(rate["limit"]),
-                        remaining=int(rate["remaining"]),
-                        reset=rate.get("reset"),
-                    )
-        log.warning("rate limit response contained no usable rate entry")
-        return None
+        expected_name = api_name.casefold()
+        expected_context = api_context.casefold()
+        expected_resource = f"{api_context}.{api_name}".casefold()
+        daily: list[dict[str, Any]] = []
+        for group in body["rateLimits"]:
+            if not isinstance(group, dict):
+                continue
+            if (
+                not isinstance(group.get("apiName"), str)
+                or group["apiName"].casefold() != expected_name
+                or not isinstance(group.get("apiContext"), str)
+                or group["apiContext"].casefold() != expected_context
+                or not isinstance(group.get("resources"), list)
+            ):
+                continue
+            for resource in group["resources"]:
+                if (
+                    not isinstance(resource, dict)
+                    or not isinstance(resource.get("name"), str)
+                    or resource["name"].casefold() != expected_resource
+                    or not isinstance(resource.get("rates"), list)
+                ):
+                    continue
+                daily.extend(
+                    rate
+                    for rate in resource["rates"]
+                    if isinstance(rate, dict)
+                    and rate.get("timeWindow") == DAILY_RATE_WINDOW_SECONDS
+                )
+
+        # Ambiguity anywhere in the target resource poisons the whole answer:
+        # picking one valid-looking entry could overstate the remaining allowance.
+        if len(daily) != 1:
+            if not daily:
+                log.warning("rate limit response contained no daily Browse rate")
+            else:
+                log.warning("rate limit response contained multiple daily Browse rates")
+            return None
+
+        rate = daily[0]
+        raw_limit = rate.get("limit")
+        raw_remaining = rate.get("remaining")
+        if (
+            raw_limit is None
+            or raw_remaining is None
+            or isinstance(raw_limit, bool)
+            or isinstance(raw_remaining, bool)
+            or (isinstance(raw_limit, float) and not raw_limit.is_integer())
+            or (isinstance(raw_remaining, float) and not raw_remaining.is_integer())
+        ):
+            log.warning("rate limit response contained non-integral quota values")
+            return None
+        try:
+            limit = int(raw_limit)
+            remaining = int(raw_remaining)
+        except (TypeError, ValueError, OverflowError):
+            log.warning("rate limit response contained malformed quota values")
+            return None
+        if limit < 0 or not 0 <= remaining <= limit:
+            log.warning("rate limit response contained impossible quota values")
+            return None
+        reset = rate.get("reset")
+        return RateLimit(
+            limit=limit,
+            remaining=remaining,
+            reset=reset if isinstance(reset, str) else None,
+        )

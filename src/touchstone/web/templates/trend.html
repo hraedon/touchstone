@@ -2,17 +2,28 @@
 {% from "_chart.html" import line_chart, bar_chart %}
 {% block title %}touchstone — {{ trend.query.name }} trend{% endblock %}
 {% block content %}
-<h1>{{ trend.query.name }}</h1>
-<p class="ts-sub mono">{{ trend.query.q }}</p>
+<header class="ts-page-head">
+  <div>
+    <div class="ts-eyebrow">Cohort analysis</div>
+    <h1>{{ trend.query.name }}</h1>
+    <p class="ts-sub mono">{{ trend.query.q }}</p>
+  </div>
+  <div class="ts-page-actions">
+    <a class="ts-button" href="{{ url_for('query_edit', query_id=trend.query.id) }}">Edit search</a>
+  </div>
+</header>
 
-<div class="ts-preamble">
-  <strong>These are asking prices, not transaction prices.</strong> Every line below
-  is drawn from what sellers were asking for listings that were still active when the
-  scan ran. eBay exposes no completed-sale data to this application, so no line here
-  can be a record of what anything changed hands for — and because badly-priced stock
-  stays in the visible pool while correctly-priced stock leaves it, the asking index
-  sits above whatever the true clearing level is.
-</div>
+<details class="ts-explainer">
+  <summary>What these prices mean</summary>
+  <div class="ts-explainer-body">
+    <strong>These are asking prices, not transaction prices.</strong> Every line below
+    is drawn from what sellers were asking for listings that were still active when the
+    scan ran. eBay exposes no completed-sale data to this application, so no line here
+    can be a record of what anything changed hands for — and because badly-priced stock
+    stays in the visible pool while correctly-priced stock leaves it, the asking index
+    sits above whatever the true clearing level is.
+  </div>
+</details>
 
 <div class="ts-panel">
   <form method="get" class="ts-actions">
