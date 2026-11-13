@@ -239,6 +239,28 @@ class TestExtractionRun:
         second = run_extraction(session, extractor=None)
         assert second.considered == 0
 
+    def test_a_complete_computer_is_not_assumed_to_be_memory(
+        self, session: Session, fake_umans: FakeUmans
+    ) -> None:
+        """RAM-like specifications in a whole laptop must still reach the model."""
+        self.add_listing(session, "v1|laptop|0", "Dell Latitude 5520 laptop 32GB 2666MHz")
+        fake_umans.replies = [
+            json.dumps({"category": "other", "product_model": "LATITUDE-5520"})
+        ]
+        url = fake_umans.start()
+
+        with UmansExtractor(
+            api_key="k", base_url=url, max_attempts=1, fallback_model=None
+        ) as extractor:
+            run = run_extraction(session, extractor=extractor)
+
+        assert run.by_model == 1
+        assert run.by_regex == 0
+        assert fake_umans.calls == 1
+        spec = session.scalars(select(ItemSpec)).one()
+        assert spec.category is SpecCategory.OTHER
+        assert spec.product_model == "LATITUDE-5520"
+
     def test_unreadable_title_stores_nothing_rather_than_a_guess(
         self, session: Session, fake_umans: FakeUmans
     ) -> None:
@@ -340,12 +362,18 @@ class TestParseModelOutputCategories:
         )
 
     def test_a_legacy_memory_response_still_parses(self) -> None:
-        """A model that ignores the category instruction must not lose its
-        memory reading: the ranges default to memory."""
+        """A pre-category response becomes explicitly memory, not uncategorized."""
         candidate = parse_model_output(
             json.dumps(
                 {"capacity_per_module_gb": 32, "module_count": 1, "total_gb": 32}
             )
         )
         assert candidate is not None
+        assert candidate.category is SpecCategory.MEMORY
         assert candidate.usable
+
+    def test_an_unrecognized_category_is_not_assumed_to_be_memory(self) -> None:
+        candidate = parse_model_output(
+            json.dumps({"category": "network", "module_count": 1, "total_gb": 32})
+        )
+        assert candidate is None

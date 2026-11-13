@@ -109,6 +109,10 @@ class TestDisappearancesAreADifferentObject:
 
 
 class TestPriceBand:
+    def test_an_omitted_unit_is_generic_not_memory_specific(self) -> None:
+        band = charts.price_band(marked=1.0, p10=1.5, median=2.5, minimum=1.0, n=12)
+        assert band.unit == "/unit"
+
     def test_the_marker_sits_left_of_the_band_when_below_p10(self) -> None:
         band = charts.price_band(marked=1.0, p10=1.5, median=2.5, minimum=1.0, n=12)
         assert band.marked_pos < band.p10_pos < band.median_pos

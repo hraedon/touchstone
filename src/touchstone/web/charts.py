@@ -25,7 +25,6 @@ from datetime import datetime
 # Display vocabulary for the unit a normalized price was divided by. Defined
 # beside the PriceUnit enum in the core so the CLI and the web face cannot
 # drift apart; re-exported here because the templates reach them through charts.
-from touchstone.db.models import PriceUnit
 from touchstone.db.models import unit_price_label as unit_price_label
 from touchstone.db.models import unit_suffix as unit_suffix
 
@@ -415,7 +414,7 @@ class PriceBand:
         """True when p10 and the median coincide, so the cohort has no spread.
 
         Common in this market and not an error: a cohort of forty listings of the
-        same module can have most of them at one price. It matters to say so,
+        same product can have most of them at one price. It matters to say so,
         because the score is expressed in spread-units and there is no spread —
         ``scan.deals.score`` falls back to a fraction of the level, and a gauge
         showing a band of zero width would otherwise look like a rendering fault.
@@ -431,7 +430,7 @@ def price_band(
     minimum: float | None,
     n: int,
     currency: str = "USD",
-    unit: str = unit_suffix(PriceUnit.GB),
+    unit: str = unit_suffix(None),
 ) -> PriceBand:
     """Build the gauge, with a margin either side so the marker never sits on the rim."""
     low = minimum if minimum is not None else min(marked, p10)

@@ -16,11 +16,14 @@ from tests.factories import (
 )
 from touchstone.db.models import (
     Deal,
+    ExtractionMethod,
+    ItemSpec,
     Listing,
     ListingDisappearance,
     Query,
     RateBudget,
     ScanStatus,
+    SpecCategory,
     VerifyOutcome,
 )
 from touchstone.scan.aggregate import MIN_COHORT_N
@@ -331,6 +334,79 @@ class TestDealFeedFiltering:
             ("memory-q", 1),
             ("nic-q", 1),
         ]
+
+
+class TestSpecWorklistCategories:
+    @pytest.mark.parametrize(
+        ("category", "fields", "expected"),
+        [
+            (
+                SpecCategory.MEMORY,
+                {"total_gb": 128, "capacity_per_module_gb": 32, "module_count": 4},
+                "128 GB total (4 x 32 GB)",
+            ),
+            (
+                SpecCategory.STORAGE,
+                {
+                    "capacity_tb": 3.84,
+                    "storage_type": "SSD",
+                    "storage_iface": "NVMe",
+                    "storage_form": "U.2",
+                    "module_count": 2,
+                },
+                "3.84 TB SSD NVMe U.2 (2 units)",
+            ),
+            (
+                SpecCategory.OTHER,
+                {"product_model": "E810-XXVDA2", "module_count": 2},
+                "model E810-XXVDA2 (2 units)",
+            ),
+        ],
+    )
+    def test_normalization_summary_follows_the_category(
+        self,
+        session: Session,
+        category: SpecCategory,
+        fields: dict[str, object],
+        expected: str,
+    ) -> None:
+        listing = make_listing(session, f"v1|{category.value}|0", f"{category.value} title")
+        session.add(
+            ItemSpec(
+                title_hash=listing.title_hash,
+                normalized_title=f"{category.value} title",
+                category=category,
+                method=ExtractionMethod.LLM,
+                confidence=0.8,
+                **fields,
+            )
+        )
+        session.flush()
+
+        spec, _, _ = views.spec_detail(session, listing.title_hash)
+        assert spec is not None
+        assert spec.normalization_summary == expected
+
+    def test_an_uncategorized_spec_is_not_treated_as_usable_memory(
+        self, session: Session
+    ) -> None:
+        listing = make_listing(session, "v1|legacy|0", "Legacy model response")
+        session.add(
+            ItemSpec(
+                title_hash=listing.title_hash,
+                normalized_title="legacy model response",
+                category=None,
+                total_gb=32,
+                module_count=1,
+                method=ExtractionMethod.LLM,
+                confidence=0.8,
+            )
+        )
+        session.flush()
+
+        rows = views.spec_worklist(session)
+        assert len(rows) == 1
+        assert rows[0].reason == "no category"
 
 
 class TestWindowAndDefinitionDiscontinuities:

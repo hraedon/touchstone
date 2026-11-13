@@ -100,3 +100,29 @@ class TestTheRenderedPageCanActuallyLoadItsAssets:
         response = harness.client.get("/", headers={"X-Forwarded-Proto": "gopher"})
         assert response.status_code == 200
         assert "gopher://" not in response.text
+
+
+class TestResponsiveAppShell:
+    def test_dashboard_metrics_link_to_their_workflows(self, harness: WebHarness) -> None:
+        body = harness.client.get("/").text
+        assert 'class="ts-metric-grid"' in body
+        for path in ("/deals", "/specs", "/watch"):
+            assert re.search(rf'class="ts-metric" href="[^"]*{path}"', body)
+
+    def test_current_navigation_section_is_exposed_to_screen_readers(
+        self, harness: WebHarness
+    ) -> None:
+        body = harness.client.get("/queries").text
+        assert re.search(r'href="[^"]*/queries" class="active" aria-current="page"', body)
+
+    def test_methodology_is_available_without_competing_with_the_work(
+        self, harness: WebHarness
+    ) -> None:
+        body = harness.client.get("/").text
+        assert '<details class="ts-explainer">' in body
+        assert "<summary>" in body
+
+    def test_the_component_styles_define_mobile_and_tablet_layouts(self) -> None:
+        css = (STATIC_DIR / "css" / "touchstone.css").read_text(encoding="utf-8")
+        assert "@media (max-width: 960px)" in css
+        assert "@media (max-width: 640px)" in css

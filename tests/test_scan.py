@@ -7,8 +7,11 @@ about historical trends rests on that property.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Callable
 
+import httpx
 import pytest
 from sqlalchemy import delete, select, text
 from sqlalchemy.orm import Session
@@ -25,8 +28,8 @@ from touchstone.db.models import (
     ScanStatus,
 )
 from touchstone.ebay.budget import BudgetGuard, today_utc
-from touchstone.ebay.client import Credentials, EbayClient, parse_item_summary
-from touchstone.scan.runner import ScanResult, ScanSkipped, run_scan
+from touchstone.ebay.client import Credentials, EbayClient, EbayError, parse_item_summary
+from touchstone.scan.runner import ScanResult, ScanSkipped, query_signature, run_scan
 
 MakeQuery = Callable[..., Query]
 
@@ -116,6 +119,37 @@ def test_shipping_is_included_in_total_cost(
     assert float(obs.shipping_cost) == 12.5
     assert obs.total_cost is not None
     assert float(obs.total_cost) == 102.5
+
+
+def test_missing_item_currency_is_not_assumed_to_be_usd() -> None:
+    raw = item("v1|no-currency|0", price=10.0)
+    raw["price"] = {"value": "10.00"}
+
+    assert parse_item_summary(raw) is None
+
+
+def test_missing_shipping_currency_keeps_total_unknown() -> None:
+    raw = item("v1|no-shipping-currency|0", price=10.0, shipping=2.0)
+    raw["shippingOptions"] = [{"shippingCost": {"value": "2.00"}}]
+
+    parsed = parse_item_summary(raw)
+    assert parsed is not None
+    assert parsed.price == 10.0
+    assert parsed.currency == "USD"
+    assert parsed.shipping_cost is None
+    assert parsed.total_cost is None
+
+
+def test_cross_currency_shipping_is_not_added_to_the_item_price() -> None:
+    raw = item("v1|cross-currency|0", price=10.0, shipping=2.0, currency="USD")
+    raw["shippingOptions"] = [{"shippingCost": {"value": "2.00", "currency": "EUR"}}]
+
+    parsed = parse_item_summary(raw)
+    assert parsed is not None
+    assert parsed.price == 10.0
+    assert parsed.currency == "USD"
+    assert parsed.shipping_cost is None
+    assert parsed.total_cost is None
 
 
 def test_missing_shipping_keeps_total_unknown_and_out_of_aggregates(
@@ -317,6 +351,65 @@ def test_a_scan_that_reaches_ebays_total_is_whole(
     assert scan is not None
     assert (scan.capped, scan.truncated) == (False, False)
     assert scan.query_signature is not None
+
+
+def test_default_search_explicitly_covers_auction_and_fixed_price_listings(
+    session: Session, make_query: MakeQuery
+) -> None:
+    fake = FakeEbay(generations=[Generation(items=[item("v1|1|0", price=100.0)])])
+    url = fake.start()
+    query = make_query()
+    try:
+        run(session, fake, query, url)
+    finally:
+        fake.stop()
+
+    assert "buyingOptions:{AUCTION|FIXED_PRICE}" in fake.filters_seen[0]
+
+
+def test_an_explicit_buying_options_filter_is_not_overridden(
+    session: Session, make_query: MakeQuery
+) -> None:
+    fake = FakeEbay(generations=[Generation(items=[item("v1|1|0", price=100.0)])])
+    url = fake.start()
+    query = make_query()
+    query.filter_expr = "buyingOptions:{AUCTION}"
+    session.flush()
+    try:
+        run(session, fake, query, url)
+    finally:
+        fake.stop()
+
+    assert fake.filters_seen[0] == "buyingOptions:{AUCTION}"
+
+
+def test_scan_uses_the_querys_marketplace(
+    session: Session, make_query: MakeQuery
+) -> None:
+    fake = FakeEbay(generations=[Generation(items=[item("v1|1|0", price=100.0)])])
+    url = fake.start()
+    query = make_query()
+    query.marketplace_id = "EBAY_GB"
+    session.flush()
+    try:
+        run(session, fake, query, url)
+    finally:
+        fake.stop()
+
+    assert fake.marketplaces_seen == ["EBAY_GB"]
+
+
+def test_auction_population_fix_has_a_query_signature_boundary(
+    make_query: MakeQuery,
+) -> None:
+    query = make_query()
+    legacy_definition = json.dumps(
+        [query.q, query.category_ids or "", query.filter_expr or "", query.marketplace_id],
+        separators=(",", ":"),
+    )
+    legacy_signature = hashlib.sha256(legacy_definition.encode("utf-8")).hexdigest()
+
+    assert query_signature(query) != legacy_signature
 
 
 def test_no_disappearances_across_a_query_edit(
@@ -526,6 +619,77 @@ def test_budget_is_charged_for_calls_actually_made(
     assert row is not None
     assert row.calls_used == result.api_calls
     assert row.calls_used >= 1
+
+
+@pytest.mark.parametrize(
+    ("failure_call", "failure_kind"),
+    [
+        pytest.param(1, "http", id="first-page-http"),
+        pytest.param(2, "http", id="later-page-http"),
+        pytest.param(1, "transport", id="first-page-transport"),
+    ],
+)
+def test_failed_searches_still_charge_every_dispatched_call(
+    session: Session,
+    make_query: MakeQuery,
+    failure_call: int,
+    failure_kind: str,
+) -> None:
+    fake = FakeEbay(
+        generations=[
+            Generation(
+                items=[item("v1|1|0", price=100.0), item("v1|2|0", price=200.0)]
+            )
+        ],
+        rate_limit_fails=True,
+    )
+    if failure_kind == "http":
+        fake.search_http_failures[failure_call] = 500
+    else:
+        fake.search_transport_failures.add(failure_call)
+    url = fake.start()
+    query = make_query(max_pages=3)
+    try:
+        with (
+            EbayClient(credentials=Credentials("id", "secret"), base_url=url) as client,
+            pytest.raises((EbayError, httpx.HTTPError)),
+        ):
+            run_scan(
+                session,
+                client,
+                query,
+                budget=BudgetGuard(session, client),
+                page_limit=1,
+            )
+    finally:
+        fake.stop()
+
+    (scan,) = session.scalars(select(Scan)).all()
+    assert scan.status is ScanStatus.FAILED
+    assert scan.api_calls == failure_call
+    assert client.calls_made == failure_call
+    row = session.get(RateBudget, today_utc())
+    assert row is not None
+    assert row.calls_used == failure_call
+
+
+def test_malformed_search_json_is_an_ebay_error_after_charging_the_call(
+    session: Session, make_query: MakeQuery
+) -> None:
+    fake = FakeEbay(generations=[Generation(items=[])], search_invalid_json=True)
+    url = fake.start()
+    query = make_query()
+    try:
+        with (
+            EbayClient(credentials=Credentials("id", "secret"), base_url=url) as client,
+            pytest.raises(EbayError, match="not JSON"),
+        ):
+            run_scan(session, client, query, budget=BudgetGuard(session, client))
+    finally:
+        fake.stop()
+
+    scan = session.scalars(select(Scan)).one()
+    assert scan.api_calls == 1
 
 
 class TestSellerFeedbackFloor:

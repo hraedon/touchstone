@@ -52,6 +52,10 @@ from touchstone.scan.diff import PreviousListing, ScanWindow, find_disappearance
 
 log = logging.getLogger("touchstone.scan")
 
+# Version 2 makes the combined auction/fixed-price default and per-query marketplace
+# application a visible measurement boundary rather than an invisible population edit.
+QUERY_SIGNATURE_VERSION = 2
+
 
 class ScanSkipped(RuntimeError):
     """The scan did not run. Carries the reason for the operator."""
@@ -185,13 +189,19 @@ def _unit_of(spec: ItemSpec | None) -> PriceUnit | None:
 def query_signature(query: Query) -> str:
     """A digest of what the query asks eBay for, to detect an edit between scans.
 
-    Covers exactly the stored definition. The operator's seller exclusions are
-    combined into the filter only at call time and are deliberately not hashed
+    Covers the stored definition plus the sampling-semantics version. The operator's
+    seller exclusions are combined into the filter only at call time and are not hashed
     here: they have their own keyed digest, and an unkeyed hash over a filter
     carrying usernames could be reversed by guessing.
     """
     definition = json.dumps(
-        [query.q, query.category_ids or "", query.filter_expr or "", query.marketplace_id],
+        [
+            QUERY_SIGNATURE_VERSION,
+            query.q,
+            query.category_ids or "",
+            query.filter_expr or "",
+            query.marketplace_id,
+        ],
         separators=(",", ":"),
     )
     return hashlib.sha256(definition.encode("utf-8")).hexdigest()
@@ -404,15 +414,21 @@ def run_scan(
                 capped = True
                 break
 
-            page = client.search_page(
-                query.q,
-                offset=offset,
-                limit=page_limit,
-                category_ids=query.category_ids,
-                filter_expr=effective_filter,
-                min_seller_feedback=query.min_seller_feedback,
-            )
-            calls += 1
+            calls_before = client.calls_made
+            try:
+                page = client.search_page(
+                    query.q,
+                    offset=offset,
+                    limit=page_limit,
+                    category_ids=query.category_ids,
+                    filter_expr=effective_filter,
+                    min_seller_feedback=query.min_seller_feedback,
+                    marketplace_id=query.marketplace_id,
+                )
+            finally:
+                # A dispatched request is spent even when its response fails. Token
+                # or local-validation failures do not increment the client counter.
+                calls += client.calls_made - calls_before
             total_reported = page.total
             excluded += page.excluded_low_feedback
 

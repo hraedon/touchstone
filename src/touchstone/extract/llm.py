@@ -177,8 +177,9 @@ def parse_model_output(raw: str) -> SpecCandidate | None:
     range check is not evidence of anything, and storing it would put a confident
     wrong answer where a known gap belongs.
 
-    A missing or unrecognized category defaults to the memory ranges — the shape
-    every pre-category response had — and ``plausible()`` still applies.
+    A missing category is accepted only as a legacy memory-shaped response and becomes
+    explicitly ``memory``. An unrecognized category is rejected rather than silently
+    turning a new kind of item into memory. ``plausible()`` still applies.
     """
     try:
         payload = json.loads(_strip_fences(raw))
@@ -188,7 +189,17 @@ def parse_model_output(raw: str) -> SpecCandidate | None:
     if not isinstance(payload, dict):
         return None
 
-    category = _as_category(payload.get("category"))
+    raw_category = payload.get("category")
+    category: SpecCategory | None
+    if raw_category is None:
+        # Pre-category model responses were memory-only. Make that legacy contract
+        # explicit so persistence and cohorting do not disagree about the category.
+        category = SpecCategory.MEMORY
+    else:
+        category = _as_category(raw_category)
+        if category is None:
+            log.warning("model returned an unrecognized category; discarding")
+            return None
     candidate = SpecCandidate(
         category=category,
         module_count=_as_int(payload.get("module_count")),

@@ -14,9 +14,10 @@ nothing else will ever update. Each is re-checked at most once per
 ``RECHECK_AFTER``, and only after any operator requests have been answered.
 
 The outcome is recorded as an observation: what the API reported, when. An
-``unknown`` is a failed check, not a verdict; the request is cleared so a
-transient failure cannot wedge the queue, and the operator can simply ask
-again.
+``unknown`` after a dispatched call is a failed check, not a verdict; the request is
+cleared so a transient failure cannot wedge the queue, and the operator can simply ask
+again. If authentication fails before any Browse request is dispatched, no call is
+charged and the request stays queued instead.
 """
 
 from __future__ import annotations
@@ -73,14 +74,20 @@ def due_for_automatic_check(
     * not dismissed, not already queued by the operator;
     * the listing is absent from its query's latest scan — a listing still being
       returned by search is live, and spending a call to confirm that is waste;
-    * no disappearance newer than its last sighting — that flag is already out
-      of the open feed on recorded evidence;
+    * no disappearance newer than its last sighting, unless an ``available``
+      verification at or after that disappearance outranks it;
     * not already verified unavailable since its last sighting — likewise;
     * no verification within ``RECHECK_AFTER``.
     """
     retired_by_disappearance = exists().where(
         ListingDisappearance.listing_item_id == Deal.listing_id,
         ListingDisappearance.detected_at > Listing.last_seen_at,
+        or_(
+            Deal.verify_outcome.is_(None),
+            Deal.verify_outcome != VerifyOutcome.AVAILABLE,
+            Deal.verified_at.is_(None),
+            ListingDisappearance.detected_at > Deal.verified_at,
+        ),
     )
     stmt = (
         select(Deal)
@@ -98,6 +105,7 @@ def due_for_automatic_check(
             or_(
                 Deal.verify_outcome.is_(None),
                 Deal.verify_outcome != VerifyOutcome.UNAVAILABLE,
+                Deal.verified_at.is_(None),
                 Deal.verified_at < Listing.last_seen_at,
             ),
             or_(Deal.verified_at.is_(None), Deal.verified_at < now - RECHECK_AFTER),
@@ -120,13 +128,24 @@ def _check(
             deal.listing_id,
         )
         return False
+    calls_before = client.calls_made
     availability = client.get_item(deal.listing_id)
+    calls = client.calls_made - calls_before
+    if calls == 0:
+        # Authentication/local failures never dispatched Browse. Do not charge a
+        # call or discard the operator's request when no observation was possible.
+        log.warning(
+            "verification of %s dispatched no Browse call; it stays queued", deal.listing_id
+        )
+        return False
+    if calls != 1:
+        raise RuntimeError(f"one verification unexpectedly dispatched {calls} Browse calls")
     deal.verified_at = moment
     # Both enums carry the same wire values; the conversion is explicit so
     # a drift between them is a test failure here, not a silent mismatch.
     deal.verify_outcome = VerifyOutcome(availability.value)
     deal.verify_requested_at = None
-    guard.record(1)
+    guard.record(calls)
     log.info("verified %s (%s): %s", deal.listing_id, why, availability.value)
     return True
 

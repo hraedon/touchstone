@@ -1,8 +1,13 @@
 {% extends "base.html" %}
 {% block title %}touchstone — watchlist{% endblock %}
 {% block content %}
-<h1>Watchlist</h1>
-<p class="ts-sub">Pinned listings, tracked whatever the sampling does.</p>
+<header class="ts-page-head">
+  <div>
+    <div class="ts-eyebrow">Observation</div>
+    <h1>Watchlist</h1>
+    <p class="ts-sub">Keep individual listings close, whatever the broader sampling does.</p>
+  </div>
+</header>
 
 <div class="ts-panel">
   <form class="ts-form" method="post" action="{{ url_for('watch_add') }}">

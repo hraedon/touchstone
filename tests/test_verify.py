@@ -23,17 +23,19 @@ from touchstone.db.models import (
     ItemSpec,
     ListingDisappearance,
     Query,
+    RateBudget,
     VerifyOutcome,
 )
-from touchstone.ebay.budget import BudgetGuard
+from touchstone.ebay.budget import BudgetGuard, today_utc
 from touchstone.ebay.client import (
     Credentials,
     EbayClient,
     ItemAvailability,
     parse_item_availability,
 )
+from touchstone.scan.deals import AvailabilityState, availability
 from touchstone.scan.schedule import run_tick
-from touchstone.scan.verify import RECHECK_AFTER, run_verification
+from touchstone.scan.verify import RECHECK_AFTER, due_for_automatic_check, run_verification
 
 
 @pytest.fixture
@@ -130,6 +132,24 @@ class TestRunVerification:
         assert fake.get_item_calls == []
         assert deal.verify_requested_at == requested
         assert deal.verified_at is None
+
+    def test_token_failure_dispatches_nothing_and_leaves_the_request_queued(
+        self, session: Session, fake: FakeEbay
+    ) -> None:
+        fake.token_fails = True
+        requested = datetime.now(UTC)
+        deal = seed_deal(session, verify_requested_at=requested)
+        with client_for(fake) as client:
+            result = run_verification(session, client, BudgetGuard(session, client))
+        session.refresh(deal)
+
+        assert (result.verified, result.api_calls, result.left_queued) == (0, 0, 1)
+        assert fake.get_item_calls == []
+        assert deal.verify_requested_at == requested
+        assert deal.verified_at is None
+        row = session.get(RateBudget, today_utc())
+        assert row is not None
+        assert row.calls_used == 0
 
     def test_limit_bounds_the_pass(self, session: Session, fake: FakeEbay) -> None:
         now = datetime.now(UTC)
@@ -240,6 +260,73 @@ class TestAutomaticChecks:
         deal.verify_outcome = VerifyOutcome.AVAILABLE
         session.flush()
         assert self.run(session, fake) == (1, 1)
+
+    @pytest.mark.parametrize(
+        ("disappearance_days", "verification_days", "outcome"),
+        [
+            pytest.param(None, None, None, id="never-checked"),
+            pytest.param(3, None, None, id="unanswered-disappearance"),
+            pytest.param(3, 2, VerifyOutcome.AVAILABLE, id="available-outranks-disappearance"),
+            pytest.param(2, 3, VerifyOutcome.AVAILABLE, id="newer-disappearance-retires"),
+            pytest.param(2, 2, VerifyOutcome.AVAILABLE, id="equal-verification-outranks"),
+            pytest.param(3, None, VerifyOutcome.AVAILABLE, id="available-without-timestamp"),
+            pytest.param(3, 2, VerifyOutcome.UNKNOWN, id="unknown-does-not-outrank"),
+            pytest.param(None, 2, VerifyOutcome.UNKNOWN, id="unknown-remains-open"),
+            pytest.param(None, 2, VerifyOutcome.UNAVAILABLE, id="unavailable-retires"),
+            pytest.param(None, None, VerifyOutcome.UNAVAILABLE, id="unavailable-without-timestamp"),
+        ],
+    )
+    def test_automatic_selection_agrees_with_availability(
+        self,
+        session: Session,
+        disappearance_days: int | None,
+        verification_days: int | None,
+        outcome: VerifyOutcome | None,
+    ) -> None:
+        last_seen_at = self.NOW - timedelta(days=4)
+        verified_at = (
+            self.NOW - timedelta(days=verification_days)
+            if verification_days is not None
+            else None
+        )
+        detected_at = (
+            self.NOW - timedelta(days=disappearance_days)
+            if disappearance_days is not None
+            else None
+        )
+        deal = seed_deal(
+            session,
+            last_seen_at=last_seen_at,
+            query_last_scanned_at=self.NOW - timedelta(minutes=10),
+        )
+        if detected_at is not None:
+            query_id = session.scalars(
+                select(Query.id).where(Query.name == "q-v1|1|0")
+            ).one()
+            session.add(
+                ListingDisappearance(
+                    listing_item_id=deal.listing_id,
+                    query_id=query_id,
+                    cohort_key=deal.cohort_key,
+                    last_seen_at=last_seen_at,
+                    detected_at=detected_at,
+                    last_price=38.0,
+                    currency="USD",
+                )
+            )
+        deal.verified_at = verified_at
+        deal.verify_outcome = outcome
+        session.flush()
+
+        state = availability(
+            last_seen_at=last_seen_at,
+            newest_disappearance_at=detected_at,
+            verified_at=verified_at,
+            verify_outcome=outcome,
+            verify_requested_at=None,
+        )
+        selected = due_for_automatic_check(session, now=self.NOW, limit=10)
+        assert (deal in selected) == (state is AvailabilityState.OPEN)
 
     def test_a_flag_already_verified_unavailable_is_not_rechecked(
         self, session: Session, fake: FakeEbay
@@ -425,6 +512,12 @@ class TestGetItemMapping:
             client.get_item("v1|404|0")
             assert client.calls_made == 2
             assert fake.get_item_calls == ["v1|1|0", "v1|404|0"]
+
+    def test_a_transport_failure_still_costs_one_unit(self, fake: FakeEbay) -> None:
+        fake.item_transport_failures.add("v1|1|0")
+        with client_for(fake) as client:
+            assert client.get_item("v1|1|0") is ItemAvailability.UNKNOWN
+            assert client.calls_made == 1
 
 
 class TestEnumStorageVocabulary:

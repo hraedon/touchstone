@@ -95,8 +95,12 @@ def cmd_queries_add(args: argparse.Namespace) -> int:
 
 
 def cmd_scan(args: argparse.Namespace) -> int:
-    factory = make_session_factory(make_engine())
-    with factory() as session:
+    engine = make_engine()
+    factory = make_session_factory(engine)
+    with writer_lock(engine) as acquired, factory() as session:
+        if not acquired:
+            print("another scanner pass holds the lock; nothing attempted")
+            return 0
         stmt = select(Query)
         stmt = stmt.where(Query.id == int(args.query)) if args.query.isdigit() else stmt.where(
             Query.name == args.query
@@ -111,9 +115,17 @@ def cmd_scan(args: argparse.Namespace) -> int:
                 result = run_scan(session, client, query, budget=guard)
             except ScanSkipped as exc:
                 session.commit()  # keep the record of the refusal
+                guard.committed()
                 print(f"scan skipped: {exc}")
                 return 2
+            except Exception:
+                # A failed manual scan still spent its calls. Commit the FAILED row
+                # and ledger rather than letting session cleanup roll them back.
+                session.commit()
+                guard.committed()
+                raise
             session.commit()
+            guard.committed()
 
     capped = "  [CAPPED: result set exceeds 10,000; narrow the filter]" if result.capped else ""
     if result.truncated:

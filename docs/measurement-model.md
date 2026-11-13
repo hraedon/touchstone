@@ -179,8 +179,9 @@ shipping and the units are the category's denominator:
 - memory: `total_gb = capacity_per_module_gb × module_count` (integer GB);
 - storage: `capacity_tb × module_count` (decimal TB — enterprise flash is sold
   in 3.84TB and 1.92TB steps, and those decimals are exact, not rounding);
-- other: `1` — the per-item metric *is* the delivered asking price, which is
-  the honest comparison for a model cohort where every listing is one unit.
+- other: `module_count` (default 1) — the per-item metric is the delivered asking
+  price divided by the number of identical items in the lot. For a single item this
+  is simply the delivered asking price; a multi-item lot must not masquerade as one.
 
 The cohort keys keep the formats they already had — memory keys are unchanged
 (`gen=DDR4|ff=RDIMM|…|cond=3000`), so no existing series is discontinuous. New
@@ -201,14 +202,20 @@ category. A per-item comparison over unlike goods is not weaker statistics, it
 is noise; messy titles are corrected by hand, and a human correction supersedes
 the model permanently.
 
-`total_cost` exists only when eBay supplies a shipping cost. A missing shipping cost
-is unknown, not free: the observation keeps the item price and records both
-`shipping_cost` and `total_cost` as null. Listings with an unknown total are excluded
-from total-cost aggregates, per-unit prices, and deal scoring; an aggregate's `n` is
-the count of listings with known totals that actually contributed to it. Their
-presence still counts in the scan result, and a later disappearance retains the
-known item price with a null last total. This is deliberate missingness, not
-imputation.
+`total_cost` exists only when eBay supplies a shipping cost in the same explicitly
+reported currency as the item price. A missing shipping cost is unknown, not free: the
+observation keeps the item price and records both `shipping_cost` and `total_cost` as
+null. Missing or mismatched currency is also unknown, never an invitation to assume
+USD or add numbers denominated in different currencies. Because an observation stores
+one currency, a shipping amount in another currency cannot be represented honestly and
+is left unrecorded rather than mislabeled. An item price without a currency is not a
+usable price observation at all.
+
+Listings with an unknown total are excluded from total-cost aggregates, per-unit
+prices, and deal scoring; an aggregate's `n` is the count of listings with known totals
+that actually contributed to it. Their presence still counts in the scan result, and a
+later disappearance retains the known item price with a null last total. This is
+deliberate missingness, not imputation.
 
 **The lot multiplier is the highest-consequence field in the system.** A listing
 titled "Lot of 4 × 32GB PC4-2400" at $200 is $1.56/GB. Read as a single 32GB module
@@ -253,6 +260,14 @@ The index does not measure "all active listings". It measures **active listings 
 sellers with at least `min_seller_feedback` feedback**, default 1 — which excludes
 zero-feedback accounts, where the obvious scam listings cluster. Those listings are
 dropped in the API client, before anything is stored.
+
+Unless a query supplies its own `buyingOptions` filter, the request explicitly covers
+`AUCTION|FIXED_PRICE`. Browse's implicit default would otherwise be fixed-price
+listings only, silently excluding auction-only listings and auctions whose
+Buy It Now option disappeared after a qualifying bid. An operator's explicit buying
+option filter always wins. Adding the combined default changed the sampled population,
+so the query-signature definition version changed with it: the first scan under this
+rule does not compute disappearances against a pre-change fixed-price baseline.
 
 This is a noise filter, not a security control. It removes the crude fakes; it does
 not stop a scammer who bought an aged account. And it excludes genuinely new,

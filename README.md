@@ -52,9 +52,10 @@ touchstone does not paper over this. It reports three separate things:
 ## Scope
 
 **In:** repeated sampling of user-defined eBay searches, excluding zero-feedback
-sellers; per-cohort asking-price
-statistics over time; title → structured spec normalization; $/GB comparison within
-cohorts; below-cohort deal flagging; retiring flagged deals whose listing left the
+sellers; per-cohort asking-price statistics over time; title → structured spec
+normalization; category-appropriate comparison within cohorts (`$/GB` for memory,
+`$/TB` for storage, and `$/item` for other model-identified goods); below-cohort deal
+flagging; retiring flagged deals whose listing left the
 market, with verification against eBay (on request, and unasked for flags a scan
 no longer sees); a deal feed filterable by query; a watchlist of pinned listings;
 a web UI to manage all of it; a compliant, functional deletion endpoint.
@@ -93,7 +94,7 @@ and no work-domain identifiers in committed files.
 
 `src/touchstone/web/` is a FastAPI + Jinja2 UI over the same calls the CLI makes,
 never a privileged one. It manages queries, reads the trends, triages the deal feed,
-corrects capacity parses, and pins listings.
+corrects category and spec parses, and pins listings.
 
 Its constraints are the interesting part, and they are asserted by tests rather than
 left to review — a careful measurement model is undone most easily by a chart title:

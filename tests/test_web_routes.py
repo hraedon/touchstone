@@ -205,14 +205,23 @@ class TestDeals:
 
     def test_dismiss_and_restore(self, harness: WebHarness) -> None:
         deal = self._seed_deal(harness)
+        deal.verify_requested_at = BASE_TIME
+        harness.session.commit()
+
         harness.client.post(f"/deals/{deal.id}/dismiss", follow_redirects=False)
         harness.session.expire_all()
-        assert harness.session.get(Deal, deal.id).dismissed_at is not None  # type: ignore[union-attr]
+        dismissed = harness.session.get(Deal, deal.id)
+        assert dismissed is not None
+        assert dismissed.dismissed_at is not None
+        assert dismissed.verify_requested_at is None
         assert "ts-band" not in harness.client.get("/deals").text
 
         harness.client.post(f"/deals/{deal.id}/restore", follow_redirects=False)
         harness.session.expire_all()
-        assert harness.session.get(Deal, deal.id).dismissed_at is None  # type: ignore[union-attr]
+        restored = harness.session.get(Deal, deal.id)
+        assert restored is not None
+        assert restored.dismissed_at is None
+        assert restored.verify_requested_at is None
 
     def _retire_by_disappearance(self, harness: WebHarness, deal: Deal) -> None:
         session = harness.session
@@ -322,6 +331,7 @@ class TestDeals:
         assert "$/TB" in body
         assert "Spec parse (storage)" in body
         assert "3.84 TB" in body
+        assert "spec parse that has been trusted or corrected" in body
 
     def test_a_verified_unavailable_deal_leaves_the_open_feed(
         self, harness: WebHarness
@@ -415,6 +425,33 @@ class TestSpecCorrection:
         body = harness.client.get("/specs").text
         assert body.index(common) < body.index(rare)
 
+    def test_the_worklist_shows_category_appropriate_spec_summaries(
+        self, harness: WebHarness
+    ) -> None:
+        session = harness.session
+        listing = make_listing(session, "v1|storage-work|0", "Micron 7450 PRO 3.84TB U.2 NVMe SSD")
+        session.add(
+            ItemSpec(
+                title_hash=listing.title_hash,
+                normalized_title="micron 7450 pro 3.84tb u.2 nvme ssd",
+                category=SpecCategory.STORAGE,
+                capacity_tb=3.84,
+                storage_type="SSD",
+                storage_iface="NVMe",
+                storage_form="U.2",
+                module_count=1,
+                method=ExtractionMethod.REGEX,
+                confidence=0.4,
+            )
+        )
+        session.commit()
+
+        body = harness.client.get("/specs").text
+        assert "Spec corrections" in body
+        assert "Extracted basis" in body
+        assert "storage" in body
+        assert "3.84 TB SSD NVMe U.2" in body
+
 
 class TestWatchlist:
     def test_pin_view_and_unpin(self, harness: WebHarness) -> None:
@@ -440,6 +477,53 @@ class TestWatchlist:
         harness.client.post(f"/watch/{listing.item_id}/unpin", follow_redirects=False)
         session.expire_all()
         assert session.scalars(select(Watch)).first() is None
+
+    @pytest.mark.parametrize(
+        ("category", "fields", "expected"),
+        [
+            (
+                SpecCategory.STORAGE,
+                {
+                    "capacity_tb": 3.84,
+                    "storage_type": "SSD",
+                    "storage_iface": "NVMe",
+                    "storage_form": "U.2",
+                },
+                "3.84 TB SSD NVMe U.2",
+            ),
+            (
+                SpecCategory.OTHER,
+                {"product_model": "E810-XXVDA2"},
+                "model E810-XXVDA2",
+            ),
+        ],
+    )
+    def test_watch_detail_summarizes_the_actual_spec_category(
+        self,
+        harness: WebHarness,
+        category: SpecCategory,
+        fields: dict[str, object],
+        expected: str,
+    ) -> None:
+        session = harness.session
+        listing = make_listing(session, f"v1|watch-{category.value}|0", f"{category.value} listing")
+        session.add(
+            ItemSpec(
+                title_hash=listing.title_hash,
+                normalized_title=f"{category.value} listing",
+                category=category,
+                method=ExtractionMethod.LLM,
+                confidence=0.8,
+                **fields,
+            )
+        )
+        session.add(Watch(listing_id=listing.item_id))
+        session.commit()
+
+        body = harness.client.get(f"/watch/{listing.item_id}").text
+        assert "Spec parse" in body
+        assert expected in body
+        assert "GB total" not in body
 
     def test_unknown_shipping_is_never_rendered_as_free(self, harness: WebHarness) -> None:
         session = harness.session

@@ -76,6 +76,156 @@ def test_unreadable_quota_falls_back_to_the_ledger_not_to_unlimited(
     fake.stop()
 
 
+def test_malformed_quota_json_falls_back_instead_of_escaping(
+    session: Session, fake: FakeEbay
+) -> None:
+    fake.rate_limit_invalid_json = True
+    with client_for(fake) as client:
+        assert client.rate_limit() is None
+        state = BudgetGuard(session, client).state()
+    fake.stop()
+
+    assert state.authoritative is False
+    assert state.remaining == DEFAULT_DAILY_LIMIT
+
+
+def test_quota_read_selects_the_browse_daily_rate_not_the_first_entry(
+    fake: FakeEbay,
+) -> None:
+    fake.rate_limit_body = {
+        "rateLimits": [
+            {
+                "apiName": "Inventory",
+                "apiContext": "sell",
+                "resources": [
+                    {
+                        "name": "sell.inventory",
+                        "rates": [{"limit": 10, "remaining": 1, "timeWindow": 86400}],
+                    }
+                ],
+            },
+            {
+                "apiName": "Browse",
+                "apiContext": "buy",
+                "resources": [
+                    {
+                        "name": "buy.marketing",
+                        "rates": [{"limit": 20, "remaining": 2, "timeWindow": 86400}],
+                    },
+                    {
+                        "name": "buy.browse",
+                        "rates": [
+                            {"limit": 100, "remaining": 3, "timeWindow": 3600},
+                            {
+                                "limit": 5000,
+                                "remaining": 4321,
+                                "reset": "2026-11-08T00:00:00.000Z",
+                                "timeWindow": 86400,
+                            },
+                        ],
+                    },
+                ],
+            },
+        ]
+    }
+    with client_for(fake) as client:
+        rate = client.rate_limit()
+    fake.stop()
+
+    assert rate is not None
+    assert (rate.limit, rate.remaining, rate.reset) == (
+        5000,
+        4321,
+        "2026-11-08T00:00:00.000Z",
+    )
+
+
+def test_ambiguous_daily_browse_rates_are_unknown(fake: FakeEbay) -> None:
+    fake.rate_limit_body = {
+        "rateLimits": [
+            {
+                "apiName": "Browse",
+                "apiContext": "buy",
+                "resources": [
+                    {
+                        "name": "buy.browse",
+                        "rates": [
+                            {"limit": 5000, "remaining": 4000, "timeWindow": 86400},
+                            {"limit": 6000, "remaining": 3000, "timeWindow": 86400},
+                        ],
+                    }
+                ],
+            }
+        ]
+    }
+    with client_for(fake) as client:
+        assert client.rate_limit() is None
+    fake.stop()
+
+
+def test_duplicate_daily_rate_elsewhere_makes_the_whole_response_ambiguous(
+    fake: FakeEbay,
+) -> None:
+    fake.rate_limit_body = {
+        "rateLimits": [
+            {
+                "apiName": "Browse",
+                "apiContext": "buy",
+                "resources": [
+                    {
+                        "name": "buy.browse",
+                        "rates": [
+                            {"limit": 5000, "remaining": 4000, "timeWindow": 86400}
+                        ],
+                    },
+                    {
+                        "name": "buy.browse",
+                        "rates": [
+                            {"limit": 5000, "remaining": 4000, "timeWindow": 86400},
+                            {"limit": 6000, "remaining": 3000, "timeWindow": 86400},
+                        ],
+                    },
+                ],
+            }
+        ]
+    }
+    with client_for(fake) as client:
+        assert client.rate_limit() is None
+    fake.stop()
+
+
+@pytest.mark.parametrize(
+    "rate",
+    [
+        pytest.param(
+            {"limit": 5000, "remaining": 5001, "timeWindow": 86400},
+            id="remaining-above-limit",
+        ),
+        pytest.param(
+            {"limit": 5000.5, "remaining": 4000, "timeWindow": 86400},
+            id="fractional-limit",
+        ),
+        pytest.param(
+            {"limit": 5000, "remaining": float("inf"), "timeWindow": 86400},
+            id="infinite-remaining",
+        ),
+    ],
+)
+def test_impossible_quota_values_are_unknown(fake: FakeEbay, rate: dict[str, object]) -> None:
+    fake.rate_limit_body = {
+        "rateLimits": [
+            {
+                "apiName": "Browse",
+                "apiContext": "buy",
+                "resources": [{"name": "buy.browse", "rates": [rate]}],
+            }
+        ]
+    }
+    with client_for(fake) as client:
+        assert client.rate_limit() is None
+    fake.stop()
+
+
 def test_check_is_clamped_by_the_reserve(session: Session) -> None:
     session.add(
         RateBudget(
